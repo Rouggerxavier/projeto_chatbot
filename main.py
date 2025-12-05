@@ -21,12 +21,9 @@ from langchain_core.chat_history import BaseChatMessageHistory
 
 from sqlalchemy.orm import Session
 
-# importa modelos e sessão do banco
+
 from database import SessionLocal, Produto, ChatHistory, init_db
 
-# ============================================================
-# Configuração de ambiente / Groq
-# ============================================================
 
 load_dotenv()
 
@@ -38,19 +35,9 @@ if not GROQ_API_KEY:
 
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
-# ============================================================
-# FastAPI
-# ============================================================
-
 app = FastAPI(title="Chatbot Materiais de Construção")
 
-# inicializa as tabelas do banco (se não existirem)
 init_db()
-
-# ============================================================
-# Modelos Pydantic (entrada/saída da API)
-# ============================================================
-
 
 class ChatRequest(PydanticBaseModel):
     message: str
@@ -61,40 +48,16 @@ class ChatResponse(PydanticBaseModel):
     reply: str
     needs_human: bool = False
 
-
-# ============================================================
-# Modelo de saída estruturada do LLM
-# ============================================================
-
-
 class BotOutput(PydanticBaseModel):
-    """
-    Estrutura que o modelo deve sempre retornar.
-    """
     reply: str
     needs_human: bool = False
-
-
-# ============================================================
-# Configuração do modelo de chat (Groq)
-# ============================================================
 
 chat_model = ChatGroq(
     model="llama-3.1-8b-instant",
     temperature=0.3,
 )
 
-# ============================================================
-# RAG simples: contexto de produtos vindos do banco
-# ============================================================
-
-
 def build_product_context(query: str, k: int = 6) -> str:
-    """
-    RAG simplificado baseado nos produtos do banco.
-    Busca produtos ativos e calcula um score por palavra-chave.
-    Retorna um texto com alguns produtos relevantes para o modelo usar como contexto.
-    """
     db: Session = SessionLocal()
     try:
         produtos = db.query(Produto).filter(Produto.ativo == True).all()
@@ -137,17 +100,11 @@ def build_product_context(query: str, k: int = 6) -> str:
     finally:
         db.close()
 
-
-# ============================================================
-# Tools (funcionalidades auxiliares)
-# ============================================================
-
 BAIRROS_ENTREGA = ["manaíra", "intermares", "aeroclube", "tambaú", "bessa"]
 
 
 @tool
 def verifica_entrega_bairro(bairro: str) -> str:
-    """Verifica se a loja realiza entrega no bairro informado."""
     b = bairro.strip().lower()
     if b in BAIRROS_ENTREGA:
         return f"Sim, fazemos entrega no bairro {bairro.title()}."
@@ -156,7 +113,6 @@ def verifica_entrega_bairro(bairro: str) -> str:
 
 @tool
 def informa_horario_funcionamento() -> str:
-    """Retorna o horário de funcionamento padrão da loja."""
     return (
         "Nosso horário de funcionamento é de segunda a sexta, das 7h às 18h, "
         "e sábado das 7h às 12h."
@@ -172,9 +128,6 @@ def extract_bairro(message: str) -> Optional[str]:
 
 
 def apply_tools_if_needed(message: str) -> str:
-    """
-    Usa heurísticas simples para decidir se chama algum tool.
-    """
     lower = message.lower()
     snippets: List[str] = []
 
@@ -189,10 +142,6 @@ def apply_tools_if_needed(message: str) -> str:
 
     return "\n".join(snippets)
 
-
-# ============================================================
-# Prompt + instruções do sistema
-# ============================================================
 SYSTEM_PROMPT = """
 Você é um atendente virtual de uma loja de material de construção chamada Constrular.
 
@@ -231,10 +180,8 @@ Resumo de comportamento:
 - Use perguntas adicionais apenas para entender melhor a obra ou completar o atendimento, sem travar a resposta principal.
 """
 
-# Parser para o output estruturado
 bot_output_parser = PydanticOutputParser(pydantic_object=BotOutput)
 
-# Prompt com contexto + histórico + instruções de formato
 prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -258,27 +205,17 @@ Responda SEMPRE no seguinte formato (JSON):
     ]
 ).partial(format_instructions=bot_output_parser.get_format_instructions())
 
-# Cadeia principal: prompt -> modelo -> parser
 base_chain = prompt | chat_model | bot_output_parser
-
-# ============================================================
-# Memória por sessão com RunnableWithMessageHistory
-# ============================================================
 
 store: Dict[str, ChatMessageHistory] = {}
 
 
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    """
-    Devolve um objeto de histórico de chat para a sessão.
-    O RunnableWithMessageHistory vai ler e atualizar esse objeto automaticamente.
-    """
     if session_id not in store:
         store[session_id] = ChatMessageHistory()
 
     history = store[session_id]
 
-    # opcional: limitar tamanho do histórico em memória
     if len(history.messages) > 10:
         history.messages = history.messages[-10:]
 
@@ -291,11 +228,6 @@ chat_with_history = RunnableWithMessageHistory(
     input_messages_key="input",
     history_messages_key="history",
 )
-
-# ============================================================
-# Detecção adicional de necessidade de humano (palavras-chave)
-# ============================================================
-
 
 def detect_needs_human_keywords(user_message: str) -> bool:
     text = user_message.lower()
@@ -315,8 +247,6 @@ def detect_needs_human_keywords(user_message: str) -> bool:
         "me passa para",
     ]
 
-    # aqui focamos em negociação e condições especiais,
-    # não em qualquer menção a orçamento
     palavras_sensiveis = [
         "desconto",
         "condição de pagamento",
@@ -339,19 +269,11 @@ def detect_needs_human_keywords(user_message: str) -> bool:
 
     return False
 
-
-# ============================================================
-# Função principal de geração de resposta (com tratamento de erro)
-# ============================================================
-
-
 async def generate_reply(message: str, user_id: Optional[str] = None) -> ChatResponse:
     session_id = user_id or "anon"
 
-    # 1) Contexto de catálogo baseado no banco
     context = build_product_context(message)
 
-    # 2) Tenta usar o fluxo estruturado (BotOutput com memória)
     try:
         bot_output: BotOutput = await chat_with_history.ainvoke(
             {"input": message, "context": context},
@@ -362,7 +284,6 @@ async def generate_reply(message: str, user_id: Optional[str] = None) -> ChatRes
         needs_human_flag = bot_output.needs_human or detect_needs_human_keywords(message)
 
     except ValidationError as e:
-        # Erro de parser/validação do BotOutput → fallback simples
         print("Erro de validação ao interpretar resposta do modelo:", e)
         traceback.print_exc()
 
@@ -380,7 +301,6 @@ async def generate_reply(message: str, user_id: Optional[str] = None) -> ChatRes
         needs_human_flag = detect_needs_human_keywords(message)
 
     except Exception as e:
-        # Qualquer outro erro inesperado: loga e responde algo genérico
         print("Erro inesperado ao gerar resposta:", e)
         traceback.print_exc()
 
@@ -390,14 +310,12 @@ async def generate_reply(message: str, user_id: Optional[str] = None) -> ChatRes
         )
         needs_human_flag = True
 
-    # 3) Aplicar tools se fizer sentido (bairros, horário, etc.)
     tools_extra = apply_tools_if_needed(message)
     if tools_extra:
         final_reply = f"{reply_text}\n\n{tools_extra}"
     else:
         final_reply = reply_text
 
-    # 4) Salvar histórico de chat no banco
     db: Session = SessionLocal()
     try:
         registro = ChatHistory(
@@ -416,12 +334,6 @@ async def generate_reply(message: str, user_id: Optional[str] = None) -> ChatRes
         db.close()
 
     return ChatResponse(reply=final_reply, needs_human=needs_human_flag)
-
-
-# ============================================================
-# Endpoint FastAPI
-# ============================================================
-
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(body: ChatRequest):
