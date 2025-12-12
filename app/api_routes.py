@@ -18,6 +18,7 @@ class ChatResponse(PydanticBaseModel):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(body: ChatRequest):
+    print("DEBUG user_id =", body.user_id, "message =", body.message)
     message = body.message or ""
     session_id = (body.user_id or "").strip() or uuid4().hex
 

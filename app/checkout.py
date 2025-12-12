@@ -1,173 +1,268 @@
 import re
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
+
 from sqlalchemy.orm import Session
 
-from database import SessionLocal, Orcamento, ItemOrcamento, Cliente, Pedido, ItemPedido
+from database import SessionLocal, Cliente, Pedido, Orcamento, ItemOrcamento
 from app.session_state import get_state, patch_state
-from app.cart_service import format_orcamento
+from app.cart_service import get_open_orcamento, format_orcamento
 from app.text_utils import norm
 
-CHECKOUT_REGEX = re.compile(r"\b(finalizar|fechar|concluir|confirmar)\b", flags=re.IGNORECASE)
 
-def is_checkout_intent(message: str) -> bool:
-    return bool(CHECKOUT_REGEX.search(message or ""))
+FINALIZE_TRIGGERS = [
+    "finalizar",
+    "finalizar pedido",
+    "fechar pedido",
+    "fechar o pedido",
+    "finalizar o pedido",
+    "pode finalizar",
+    "pode fechar",
+    "quero finalizar",
+    "quero fechar",
+]
 
-def parse_phone(message: str) -> Optional[str]:
+
+def _is_finalize_intent(message: str) -> bool:
+    t = norm(message)
+    t = t.strip()
+    return any(g == t or g in t for g in FINALIZE_TRIGGERS)
+
+
+def _extract_phone(message: str) -> Optional[str]:
     m = re.search(r"(\d[\d\s\-().]{7,})", message or "")
     if not m:
         return None
     digits = re.sub(r"\D", "", m.group(1))
-    return digits if len(digits) >= 8 else None
+    if len(digits) < 8:
+        return None
+    return digits
 
-def parse_name(message: str) -> Optional[str]:
+
+def _extract_name(message: str) -> Optional[str]:
+    msg = (message or "").strip()
     pats = [
-        r"meu nome é\s+([A-Za-zÀ-ÿ\s]{2,})",
-        r"meu nome eh\s+([A-Za-zÀ-ÿ\s]{2,})",
-        r"me chamo\s+([A-Za-zÀ-ÿ\s]{2,})",
-        r"sou\s+([A-Za-zÀ-ÿ\s]{2,})",
+        r"me chamo ([A-Za-zÀ-ÿ\s]+)",
+        r"meu nome é ([A-Za-zÀ-ÿ\s]+)",
+        r"meu nome eh ([A-Za-zÀ-ÿ\s]+)",
+        r"sou ([A-Za-zÀ-ÿ\s]+)",
     ]
     for pat in pats:
-        m = re.search(pat, message or "", flags=re.IGNORECASE)
+        m = re.search(pat, msg, flags=re.IGNORECASE)
         if m:
-            return m.group(1).strip().strip(" .,!;:")
+            return m.group(1).strip().strip(".!,")
     return None
 
-def get_open_budget(db: Session, session_id: str) -> Optional[Orcamento]:
-    return db.query(Orcamento).filter(Orcamento.user_id == session_id, Orcamento.status == "aberto").first()
 
-def budget_is_empty(db: Session, orc: Orcamento) -> bool:
-    return db.query(ItemOrcamento).filter(ItemOrcamento.id_orcamento == orc.id).count() == 0
+def _maybe_free_text_name(message: str) -> Optional[str]:
+    """
+    Aceita nome “cru” quando estamos em checkout e faltando nome:
+    - curto
+    - contém letras
+    - não parece comando (“finalizar”, “ok”, etc.)
+    """
+    raw = (message or "").strip()
+    if not raw:
+        return None
+
+    t = norm(raw)
+
+    # evita pegar palavras de fluxo como nome
+    if t in {"ok", "certo", "beleza", "finalizar", "fechar", "entrega", "retirada", "pix", "cartao", "cartão", "dinheiro"}:
+        return None
+
+    # se tem dígitos demais, provavelmente é telefone/endereço
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) >= 6:
+        return None
+
+    # precisa ter letra
+    if not re.search(r"[A-Za-zÀ-ÿ]", raw):
+        return None
+
+    # tamanho razoável
+    if len(raw) > 40:
+        return None
+
+    # remove caracteres esquisitos
+    cleaned = re.sub(r"[^A-Za-zÀ-ÿ\s']", " ", raw).strip()
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+
+    if len(cleaned) < 2:
+        return None
+    return cleaned
+
 
 def ready_to_checkout(session_id: str) -> bool:
     st = get_state(session_id)
 
+    orc = get_open_orcamento(session_id)
+    if not orc:
+        return False
+
     if not st.get("preferencia_entrega"):
         return False
     if not st.get("forma_pagamento"):
         return False
-    if st.get("preferencia_entrega") == "entrega" and not (st.get("cep") or st.get("endereco") or st.get("bairro")):
-        return False
 
-    db: Session = SessionLocal()
-    try:
-        orc = get_open_budget(db, session_id)
-        if not orc or budget_is_empty(db, orc):
+    if st.get("preferencia_entrega") == "entrega":
+        if not (st.get("bairro") or st.get("cep") or st.get("endereco")):
             return False
-        return True
-    finally:
-        db.close()
 
-def create_order_from_budget(session_id: str) -> Tuple[bool, str, Optional[int]]:
+    return True
+
+
+def _summary_from_orcamento_items(items: List[ItemOrcamento]) -> Tuple[str, float]:
+    total = 0.0
+    linhas = []
+    for it in items:
+        produto = it.produto
+        if not produto:
+            continue
+        qtd = float(it.quantidade)
+        vu = float(it.valor_unitario)
+        sub = float(it.subtotal)
+        total += sub
+        linhas.append(f"{qtd:.0f} x {produto.nome} (R$ {vu:.2f} cada) = R$ {sub:.2f}")
+    linhas.append(f"Total aproximado: R$ {total:.2f}")
+    return "\n".join(linhas), total
+
+
+def _create_pedido_from_orcamento(session_id: str) -> Tuple[Optional[int], Optional[str]]:
     st = get_state(session_id)
-    nome = st.get("cliente_nome")
-    tel = st.get("cliente_telefone")
-    if not nome or not tel:
-        return False, "Faltam dados de contato (nome/telefone).", None
 
     db: Session = SessionLocal()
     try:
-        orc = get_open_budget(db, session_id)
+        orc: Optional[Orcamento] = (
+            db.query(Orcamento)
+            .filter(Orcamento.user_id == session_id, Orcamento.status == "aberto")
+            .first()
+        )
         if not orc:
-            return False, "Não encontrei um orçamento aberto para fechar.", None
-        if budget_is_empty(db, orc):
-            return False, "Seu orçamento está vazio. Adicione pelo menos 1 item antes de finalizar.", None
+            return None, "Não encontrei um orçamento aberto para finalizar."
 
-        cliente = db.query(Cliente).filter(Cliente.telefone == tel).first()
+        items = (
+            db.query(ItemOrcamento)
+            .filter(ItemOrcamento.id_orcamento == orc.id)
+            .all()
+        )
+        if not items:
+            return None, "Seu orçamento está vazio — adicione algum item antes de finalizar."
+
+        resumo, _total = _summary_from_orcamento_items(items)
+
+        telefone = st.get("cliente_telefone") or ""
+        nome = st.get("cliente_nome") or "Cliente do chat"
+
+        cliente = db.query(Cliente).filter(Cliente.telefone == telefone).first()
         if not cliente:
-            cliente = Cliente(nome=nome, telefone=tel, bairro=st.get("bairro"), endereco=st.get("endereco"))
+            cliente = Cliente(nome=nome, telefone=telefone)
             db.add(cliente)
             db.flush()
         else:
-            cliente.nome = nome
-            if st.get("bairro"):
-                cliente.bairro = st.get("bairro")
-            if st.get("endereco"):
-                cliente.endereco = st.get("endereco")
+            if nome and (not cliente.nome or cliente.nome.strip() == "Cliente do chat"):
+                cliente.nome = nome
 
-        observacoes = (
-            f"Origem: chatbot. "
-            f"Entrega/retirada: {st.get('preferencia_entrega')}. "
-            f"Pagamento: {st.get('forma_pagamento')}. "
-            f"Endereço: {st.get('endereco') or ''}. "
-            f"CEP: {st.get('cep') or ''}. "
-            f"Bairro: {st.get('bairro') or ''}."
+        observacoes = []
+        observacoes.append("Origem: chatbot")
+        observacoes.append(f"Entrega/retirada: {st.get('preferencia_entrega')}")
+        observacoes.append(f"Pagamento: {st.get('forma_pagamento')}")
+        if st.get("bairro"):
+            observacoes.append(f"Bairro: {st.get('bairro')}")
+        if st.get("cep"):
+            observacoes.append(f"CEP: {st.get('cep')}")
+        if st.get("endereco"):
+            observacoes.append(f"Endereço: {st.get('endereco')}")
+
+        pedido = Pedido(
+            id_cliente=cliente.id,
+            status="aberto",
+            observacoes="\n".join(observacoes),
         )
-
-        pedido = Pedido(id_cliente=cliente.id, status="aberto", observacoes=observacoes)
         db.add(pedido)
         db.flush()
 
-        itens_orc = db.query(ItemOrcamento).filter(ItemOrcamento.id_orcamento == orc.id).all()
-        for it in itens_orc:
-            prod = it.produto
-            if not prod:
-                continue
-            db.add(
-                ItemPedido(
-                    id_pedido=pedido.id,
-                    id_produto=prod.id,
-                    quantidade=float(it.quantidade),
-                    valor_unitario=float(it.valor_unitario),
-                    valor_total=float(it.subtotal),
-                )
-            )
-
+        # fecha orçamento (não apaga)
         orc.status = "fechado"
-        db.flush()
         db.commit()
 
-        patch_state(session_id, {"last_order_id": pedido.id})
-        return True, f"Pedido #{pedido.id} registrado e encaminhado para um atendente finalizar.", pedido.id
+        patch_state(session_id, {
+            "last_order_id": pedido.id,
+            "last_order_summary": resumo,
+            "checkout_mode": False,
+        })
 
-    except Exception as e:
+        return pedido.id, None
+
+    except Exception:
         db.rollback()
-        return False, f"Erro ao fechar o pedido: {e}", None
+        return None, "Tive um problema ao finalizar o pedido. Um atendente humano pode revisar."
     finally:
         db.close()
 
+
 def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]:
+    """
+    Retorna (reply, needs_human). Se reply=None, fluxo segue normal.
+    """
     st = get_state(session_id)
 
-    # ✅ ativa checkout se o usuário pedir ou se já está tudo pronto
-    if is_checkout_intent(message) or ready_to_checkout(session_id):
-        patch_state(session_id, {"checkout_active": True})
-        st = get_state(session_id)
+    # entra em modo checkout somente se o usuário pedir
+    if _is_finalize_intent(message):
+        patch_state(session_id, {"checkout_mode": True})
 
-    if not st.get("checkout_active"):
+    st = get_state(session_id)
+    if not st.get("checkout_mode"):
         return None, False
 
-    # captura nome/telefone
-    n = parse_name(message)
-    if n:
-        patch_state(session_id, {"cliente_nome": n})
-        st = get_state(session_id)
+    # se não está pronto, pede só o que falta
+    if not ready_to_checkout(session_id):
+        resumo = format_orcamento(session_id)
 
-    tel = parse_phone(message)
+        faltas = []
+        if not st.get("preferencia_entrega"):
+            faltas.append("**entrega** ou **retirada**")
+        if not st.get("forma_pagamento"):
+            faltas.append("forma de pagamento (**PIX**, **cartão** ou **dinheiro**)")
+        if st.get("preferencia_entrega") == "entrega":
+            if not (st.get("bairro") or st.get("cep") or st.get("endereco")):
+                faltas.append("**bairro** ou **CEP/endereço** para entrega")
+
+        return (f"{resumo}\n\nPara finalizar, preciso de: " + ", ".join(faltas) + ".", False)
+
+    # captura nome/telefone
+    nome = _extract_name(message)
+    if not nome and not st.get("cliente_nome"):
+        # ✅ aceita nome “cru”
+        nome = _maybe_free_text_name(message)
+
+    if nome:
+        patch_state(session_id, {"cliente_nome": nome})
+
+    tel = _extract_phone(message)
     if tel:
         patch_state(session_id, {"cliente_telefone": tel})
-        st = get_state(session_id)
 
-    # faltas do “pronto pra fechar”
-    if not st.get("preferencia_entrega"):
-        return "Para finalizar: vai ser **entrega** ou **retirada**?", True
+    st = get_state(session_id)
 
-    if not st.get("forma_pagamento"):
-        return "Qual a forma de pagamento? (**PIX**, **cartão** ou **dinheiro**)", True
-
-    if st.get("preferencia_entrega") == "entrega" and not (st.get("cep") or st.get("endereco") or st.get("bairro")):
-        return "Para entrega, me diga o **bairro** ou mande o **CEP/endereço**.", True
-
-    # contato
     if not st.get("cliente_nome"):
-        return "Para eu encaminhar ao atendente, me diga seu **nome** (ex.: “me chamo João”).", True
-
+        return "Para eu encaminhar ao atendente, me diga seu **nome** (ex.: “me chamo João” ou apenas “João”).", False
     if not st.get("cliente_telefone"):
-        return "Agora me informe seu **telefone** para contato (ex.: 83999999999).", True
+        return "Agora me informe seu **telefone** para contato (ex.: 83999999999).", False
 
-    ok, msg, _ = create_order_from_budget(session_id)
-    patch_state(session_id, {"checkout_active": False})
+    # cria pedido
+    pedido_id, err = _create_pedido_from_orcamento(session_id)
+    if err:
+        return err, True
 
-    if not ok:
-        return msg, True
+    # ✅ pega o estado ATUALIZADO (antes era isso que deixava o resumo vazio)
+    st = get_state(session_id)
+    resumo = st.get("last_order_summary") or "(não consegui montar o resumo agora, mas o pedido foi registrado)"
 
-    return f"✅ {msg}\n\nUm atendente humano vai revisar e finalizar seu pedido agora. 🙋‍♂️\n\n{format_orcamento(session_id)}", True
+    reply = (
+        f"✅ Pedido **#{pedido_id}** registrado e encaminhado para um atendente finalizar.\n\n"
+        f"Resumo do pedido:\n{resumo}\n\n"
+        "Um atendente humano vai revisar e finalizar seu pedido agora. 🙋‍♂️\n\n"
+        "Obs.: esse orçamento foi **fechado** (por isso um novo orçamento pode ficar vazio). "
+        "Se quiser fazer um novo pedido, é só me dizer os itens."
+    )
+    return reply, True

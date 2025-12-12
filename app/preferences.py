@@ -6,42 +6,53 @@ from app.session_state import get_state, patch_state
 BAIRROS_ENTREGA = ["manaíra", "intermares", "aeroclube", "tambaú", "bessa"]
 CEP_REGEX = re.compile(r"\b\d{5}-?\d{3}\b")
 
+
 def detect_delivery_bairro(message: str) -> Optional[str]:
     t = norm(message)
+    # aceita "bairro bessa" também
+    if t.startswith("bairro "):
+        t = t.replace("bairro ", "", 1).strip()
+
     for b in BAIRROS_ENTREGA:
         if b in t:
             return b
     return None
 
-def maybe_register_address(message: str, session_id: str) -> bool:
-    st = get_state(session_id)
-    patch = {}
 
-    m = CEP_REGEX.search(message or "")
+def maybe_register_address(message: str, session_id: str) -> bool:
+    patch = {}
+    raw = (message or "").strip()
+
+    m = CEP_REGEX.search(raw)
     if m:
         cep = m.group(0).replace("-", "")
         patch["cep"] = f"{cep[:5]}-{cep[5:]}"
-    t = norm(message)
+
+    t = norm(raw)
     if any(k in t for k in ["rua ", "av ", "avenida", "travessa", "alameda", "nº", "numero", "número"]):
-        patch["endereco"] = (message or "").strip()
+        patch["endereco"] = raw
+
+    b = detect_delivery_bairro(raw)
+    if b:
+        patch["bairro"] = b
 
     if patch:
         patch_state(session_id, patch)
         return True
     return False
 
+
 def handle_preferences(message: str, session_id: str) -> bool:
     t = norm(message)
     st = get_state(session_id)
     patch = {}
 
-    # entrega/retirada
+    # entrega x retirada
     if "entrega" in t and st.get("preferencia_entrega") != "entrega":
         patch["preferencia_entrega"] = "entrega"
 
     if any(x in t for x in ["retirada", "retirar", "buscar na loja"]) and st.get("preferencia_entrega") != "retirada":
         patch["preferencia_entrega"] = "retirada"
-        # ✅ se mudou para retirada, não faz sentido ficar pedindo CEP/endereço
         patch["bairro"] = None
         patch["cep"] = None
         patch["endereco"] = None
@@ -54,7 +65,7 @@ def handle_preferences(message: str, session_id: str) -> bool:
     if "dinheiro" in t and st.get("forma_pagamento") != "dinheiro":
         patch["forma_pagamento"] = "dinheiro"
 
-    # bairro
+    # bairro (inclui "bairro bessa")
     b = detect_delivery_bairro(message)
     if b and st.get("bairro") != b:
         patch["bairro"] = b
@@ -64,14 +75,39 @@ def handle_preferences(message: str, session_id: str) -> bool:
         return True
     return False
 
-def message_is_preferences_only(message: str) -> bool:
+
+def message_is_preferences_only(message: str, session_id: str) -> bool:
+    """
+    True quando a mensagem parece só atualizar preferências/endereço
+    (sem intenção de produto).
+    """
+    st = get_state(session_id)
+
+    # ✅ se estamos esperando quantidade, "sim" não pode ser interceptado aqui
+    if st.get("awaiting_qty"):
+        return False
+
     t = norm(message).strip()
-    if t in {"ok", "certo", "beleza", "pronto", "isso", "sim"}:
+
+    # ack simples
+    if t in {"ok", "certo", "beleza", "pronto", "isso"}:
         return True
-    if CEP_REGEX.fullmatch((message or "").strip().replace(" ", "")) is not None:
+
+    # CEP puro
+    raw = (message or "").strip().replace(" ", "")
+    if CEP_REGEX.fullmatch(raw) is not None:
         return True
+
+    # "bairro bessa"
+    if t.startswith("bairro "):
+        return True
+
+    # bairro puro
     if t in BAIRROS_ENTREGA:
         return True
+
+    # palavras de preferência
     if any(k in t for k in ["entrega", "retirada", "retirar", "buscar na loja", "pix", "cartao", "cartão", "dinheiro"]):
         return True
+
     return False
