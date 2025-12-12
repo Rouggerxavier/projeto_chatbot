@@ -1,4 +1,3 @@
-# database.py
 from sqlalchemy import (
     create_engine,
     Column,
@@ -10,14 +9,15 @@ from sqlalchemy import (
     Numeric,
     ForeignKey,
     text,
+    JSON,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
+from sqlalchemy.ext.mutable import MutableDict
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
-# Variáveis do .env
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "1327")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -30,9 +30,6 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# ============================
-# MODELOS DO BANCO
-# ============================
 
 class CategoriaProduto(Base):
     __tablename__ = "categorias_produto"
@@ -57,6 +54,8 @@ class Produto(Base):
     ativo = Column(Boolean, default=True)
 
     categoria = relationship("CategoriaProduto", back_populates="produtos")
+    itens_pedido = relationship("ItemPedido", back_populates="produto")
+    itens_orcamento = relationship("ItemOrcamento", back_populates="produto")
 
 
 class Cliente(Base):
@@ -68,15 +67,20 @@ class Cliente(Base):
     bairro = Column(String(80))
     endereco = Column(Text)
 
+    pedidos = relationship("Pedido", back_populates="cliente")
+
 
 class Pedido(Base):
     __tablename__ = "pedidos"
 
     id = Column(Integer, primary_key=True, index=True)
-    id_cliente = Column(Integer, ForeignKey("clientes.id"))
+    id_cliente = Column(Integer, ForeignKey("clientes.id"), nullable=True)
     data_pedido = Column(TIMESTAMP, server_default=text("NOW()"))
     status = Column(String(20), default="aberto")
     observacoes = Column(Text)
+
+    cliente = relationship("Cliente", back_populates="pedidos")
+    itens = relationship("ItemPedido", back_populates="pedido", cascade="all, delete-orphan")
 
 
 class ItemPedido(Base):
@@ -88,6 +92,9 @@ class ItemPedido(Base):
     quantidade = Column(Numeric(10, 2), nullable=False)
     valor_unitario = Column(Numeric(10, 2), nullable=False)
     valor_total = Column(Numeric(10, 2), nullable=False)
+
+    pedido = relationship("Pedido", back_populates="itens")
+    produto = relationship("Produto", back_populates="itens_pedido")
 
 
 class ChatHistory(Base):
@@ -101,6 +108,45 @@ class ChatHistory(Base):
     created_at = Column(TIMESTAMP, server_default=text("NOW()"))
 
 
+class Orcamento(Base):
+    __tablename__ = "orcamentos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(100), index=True)
+    status = Column(String(20), default="aberto")
+    total_aproximado = Column(Numeric(12, 2), default=0)
+    created_at = Column(TIMESTAMP, server_default=text("NOW()"))
+    updated_at = Column(TIMESTAMP, server_default=text("NOW()"))
+
+    itens = relationship(
+        "ItemOrcamento",
+        back_populates="orcamento",
+        cascade="all, delete-orphan",
+    )
+
+
+class ItemOrcamento(Base):
+    __tablename__ = "itens_orcamento"
+
+    id = Column(Integer, primary_key=True, index=True)
+    id_orcamento = Column(Integer, ForeignKey("orcamentos.id", ondelete="CASCADE"))
+    id_produto = Column(Integer, ForeignKey("produtos.id"))
+    quantidade = Column(Numeric(10, 2), nullable=False)
+    valor_unitario = Column(Numeric(10, 2), nullable=False)
+    subtotal = Column(Numeric(12, 2), nullable=False)
+
+    orcamento = relationship("Orcamento", back_populates="itens")
+    produto = relationship("Produto", back_populates="itens_orcamento")
+
+
+# ✅ NOVO: estado da conversa persistido no banco (acaba com "esqueceu entrega/pix/cep")
+class ChatSessionState(Base):
+    __tablename__ = "chat_session_state"
+
+    user_id = Column(String(100), primary_key=True, index=True)
+    data = Column(MutableDict.as_mutable(JSON), default=dict)
+    updated_at = Column(TIMESTAMP, server_default=text("NOW()"), onupdate=text("NOW()"))
+
+
 def init_db():
-    """Cria as tabelas no banco, se ainda não existirem."""
     Base.metadata.create_all(bind=engine)
