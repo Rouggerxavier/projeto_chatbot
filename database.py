@@ -9,15 +9,15 @@ from sqlalchemy import (
     Numeric,
     ForeignKey,
     text,
-    JSON,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
-from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.dialects.postgresql import JSONB
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
+# Variáveis do .env
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "1327")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -30,6 +30,9 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# ============================
+# MODELOS DO BANCO
+# ============================
 
 class CategoriaProduto(Base):
     __tablename__ = "categorias_produto"
@@ -74,7 +77,7 @@ class Pedido(Base):
     __tablename__ = "pedidos"
 
     id = Column(Integer, primary_key=True, index=True)
-    id_cliente = Column(Integer, ForeignKey("clientes.id"), nullable=True)
+    id_cliente = Column(Integer, ForeignKey("clientes.id"))
     data_pedido = Column(TIMESTAMP, server_default=text("NOW()"))
     status = Column(String(20), default="aberto")
     observacoes = Column(Text)
@@ -108,12 +111,37 @@ class ChatHistory(Base):
     created_at = Column(TIMESTAMP, server_default=text("NOW()"))
 
 
+# ============================
+# ESTADO DA CONVERSA (PERSISTENTE)
+# ============================
+
+class ChatSessionState(Base):
+    """
+    Guarda o estado da conversa do usuário (session_id/user_id) no banco,
+    para não perder 'entrega/pix/cep' etc quando reiniciar o servidor.
+    """
+    __tablename__ = "chat_session_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(100), unique=True, index=True, nullable=False)
+
+    # estado inteiro em JSON
+    state = Column(JSONB, nullable=False, default=dict)
+
+    created_at = Column(TIMESTAMP, server_default=text("NOW()"))
+    updated_at = Column(TIMESTAMP, server_default=text("NOW()"))
+
+
+# ============================
+# ORÇAMENTO
+# ============================
+
 class Orcamento(Base):
     __tablename__ = "orcamentos"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String(100), index=True)
-    status = Column(String(20), default="aberto")
+    status = Column(String(20), default="aberto")  # aberto, fechado, cancelado
     total_aproximado = Column(Numeric(12, 2), default=0)
     created_at = Column(TIMESTAMP, server_default=text("NOW()"))
     updated_at = Column(TIMESTAMP, server_default=text("NOW()"))
@@ -139,14 +167,39 @@ class ItemOrcamento(Base):
     produto = relationship("Produto", back_populates="itens_orcamento")
 
 
-# ✅ NOVO: estado da conversa persistido no banco (acaba com "esqueceu entrega/pix/cep")
-class ChatSessionState(Base):
-    __tablename__ = "chat_session_state"
+# ============================
+# PEDIDOS_CHAT (registro completo do checkout)
+# ============================
 
-    user_id = Column(String(100), primary_key=True, index=True)
-    data = Column(MutableDict.as_mutable(JSON), default=dict)
-    updated_at = Column(TIMESTAMP, server_default=text("NOW()"), onupdate=text("NOW()"))
+class PedidoChat(Base):
+    __tablename__ = "pedidos_chat"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    id_pedido = Column(Integer, ForeignKey("pedidos.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String(100), index=True, nullable=False)
+
+    preferencia_entrega = Column(String(20))  # entrega / retirada
+    forma_pagamento = Column(String(20))      # pix / cartão / dinheiro
+    bairro = Column(String(80))
+    cep = Column(String(20))
+    endereco = Column(Text)
+
+    cliente_nome = Column(String(150))
+    cliente_telefone = Column(String(20))
+
+    total_aproximado = Column(Numeric(12, 2), default=0)
+
+    itens = Column(JSONB, nullable=False, default=list)
+    state_snapshot = Column(JSONB, nullable=False, default=dict)
+
+    resumo = Column(Text, nullable=False)
+
+    created_at = Column(TIMESTAMP, server_default=text("NOW()"))
+
+    pedido = relationship("Pedido")
 
 
 def init_db():
+    """Cria as tabelas no banco, se ainda não existirem."""
     Base.metadata.create_all(bind=engine)

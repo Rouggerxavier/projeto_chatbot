@@ -1,5 +1,5 @@
 import traceback
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any, Dict, List
 
 from app.constants import HORARIO_LOJA
 from app.text_utils import (
@@ -13,7 +13,12 @@ from app.text_utils import (
 )
 from app.persistence import save_chat_db
 from app.cart_service import format_orcamento, reset_orcamento, add_item_to_orcamento
-from app.product_search import db_find_best_products, format_options, parse_choice_indices, db_get_product_by_id
+from app.product_search import (
+    db_find_best_products,
+    format_options,
+    parse_choice_indices,
+    db_get_product_by_id,
+)
 from app.parsing import (
     extract_kg_quantity,
     extract_units_quantity,
@@ -24,6 +29,45 @@ from app.parsing import (
 from app.preferences import handle_preferences, message_is_preferences_only, maybe_register_address
 from app.checkout import handle_checkout, ready_to_checkout
 from app.session_state import get_state, patch_state
+
+
+def _as_suggestion_dict(item: Any) -> Optional[Dict[str, Any]]:
+    """
+    Normaliza um item de sugestão para:
+      {"id": int, "nome": str}
+
+    Aceita:
+      - dict vindo do RAG/SQL: {"product_id":..., "nome":...}
+      - dict já normalizado: {"id":..., "nome":...}
+      - objeto ORM Produto: .id / .nome
+    """
+    if item is None:
+        return None
+
+    # dict do RAG/SQL
+    if isinstance(item, dict):
+        if "id" in item and "nome" in item:
+            try:
+                return {"id": int(item["id"]), "nome": str(item["nome"])}
+            except Exception:
+                return None
+        if "product_id" in item and "nome" in item:
+            try:
+                return {"id": int(item["product_id"]), "nome": str(item["nome"])}
+            except Exception:
+                return None
+        return None
+
+    # ORM Produto
+    pid = getattr(item, "id", None)
+    nome = getattr(item, "nome", None)
+    if pid is not None and nome is not None:
+        try:
+            return {"id": int(pid), "nome": str(nome)}
+        except Exception:
+            return None
+
+    return None
 
 
 def reply_after_preference(session_id: str) -> str:
@@ -174,21 +218,30 @@ def auto_suggest_products(message: str, session_id: str) -> Optional[str]:
     if not hint or len(hint) < 2:
         return None
 
-    produtos = db_find_best_products(hint, k=5)
+    produtos = db_find_best_products(hint, k=5)  # <- lista de dicts
     if not produtos:
         return None
 
     requested_kg = extract_kg_quantity(message)
 
+    normalized: List[Dict[str, Any]] = []
+    for p in produtos:
+        s = _as_suggestion_dict(p)
+        if s:
+            normalized.append(s)
+
+    if not normalized:
+        return None
+
     patch_state(session_id, {
-        "last_suggestions": [{"id": p.id, "nome": p.nome} for p in produtos],
+        "last_suggestions": normalized,
         "last_hint": hint,
         "last_requested_kg": requested_kg,
     })
 
     extra = ""
-    if requested_kg is not None and produtos:
-        conv = suggest_units_from_packaging(produtos[0].nome, requested_kg)
+    if requested_kg is not None and normalized:
+        conv = suggest_units_from_packaging(normalized[0]["nome"], requested_kg)
         if conv:
             _, conv_text = conv
             extra = f"\n\nPelo que você pediu: **{conv_text}**."
@@ -207,11 +260,12 @@ def handle_suggestions_choice(session_id: str, message: str) -> Optional[str]:
     if not suggestions:
         return None
 
-    indices = parse_choice_indices(message, max_len=len(suggestions))
+    # ✅ CHAMADA POSICIONAL: não quebra se o nome do parâmetro mudar (max_n/max_len/etc)
+    indices = parse_choice_indices(message, len(suggestions))
     if not indices:
         return None
 
-    chosen_id = suggestions[indices[0]]["id"]
+    chosen_id = suggestions[indices[0] - 1]["id"]  # indices é 1-based
     requested_kg = st.get("last_requested_kg")
 
     patch_state(session_id, {"last_suggestions": [], "last_hint": None, "last_requested_kg": None})

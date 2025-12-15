@@ -3,7 +3,14 @@ from typing import Optional, Tuple, List
 
 from sqlalchemy.orm import Session
 
-from database import SessionLocal, Cliente, Pedido, Orcamento, ItemOrcamento
+from database import (
+    SessionLocal,
+    Cliente,
+    Pedido,
+    Orcamento,
+    ItemOrcamento,
+    PedidoChat,
+)
 from app.session_state import get_state, patch_state
 from app.cart_service import get_open_orcamento, format_orcamento
 from app.text_utils import norm
@@ -23,8 +30,7 @@ FINALIZE_TRIGGERS = [
 
 
 def _is_finalize_intent(message: str) -> bool:
-    t = norm(message)
-    t = t.strip()
+    t = norm(message).strip()
     return any(g == t or g in t for g in FINALIZE_TRIGGERS)
 
 
@@ -54,36 +60,25 @@ def _extract_name(message: str) -> Optional[str]:
 
 
 def _maybe_free_text_name(message: str) -> Optional[str]:
-    """
-    Aceita nome “cru” quando estamos em checkout e faltando nome:
-    - curto
-    - contém letras
-    - não parece comando (“finalizar”, “ok”, etc.)
-    """
     raw = (message or "").strip()
     if not raw:
         return None
 
     t = norm(raw)
 
-    # evita pegar palavras de fluxo como nome
     if t in {"ok", "certo", "beleza", "finalizar", "fechar", "entrega", "retirada", "pix", "cartao", "cartão", "dinheiro"}:
         return None
 
-    # se tem dígitos demais, provavelmente é telefone/endereço
     digits = re.sub(r"\D", "", raw)
     if len(digits) >= 6:
         return None
 
-    # precisa ter letra
     if not re.search(r"[A-Za-zÀ-ÿ]", raw):
         return None
 
-    # tamanho razoável
     if len(raw) > 40:
         return None
 
-    # remove caracteres esquisitos
     cleaned = re.sub(r"[^A-Za-zÀ-ÿ\s']", " ", raw).strip()
     cleaned = re.sub(r"\s{2,}", " ", cleaned)
 
@@ -148,7 +143,7 @@ def _create_pedido_from_orcamento(session_id: str) -> Tuple[Optional[int], Optio
         if not items:
             return None, "Seu orçamento está vazio — adicione algum item antes de finalizar."
 
-        resumo, _total = _summary_from_orcamento_items(items)
+        resumo, total = _summary_from_orcamento_items(items)
 
         telefone = st.get("cliente_telefone") or ""
         nome = st.get("cliente_nome") or "Cliente do chat"
@@ -161,6 +156,12 @@ def _create_pedido_from_orcamento(session_id: str) -> Tuple[Optional[int], Optio
         else:
             if nome and (not cliente.nome or cliente.nome.strip() == "Cliente do chat"):
                 cliente.nome = nome
+
+        # opcional: salva endereço/bairro no cadastro do cliente
+        if st.get("bairro"):
+            cliente.bairro = st.get("bairro")
+        if st.get("endereco"):
+            cliente.endereco = st.get("endereco")
 
         observacoes = []
         observacoes.append("Origem: chatbot")
@@ -180,6 +181,38 @@ def _create_pedido_from_orcamento(session_id: str) -> Tuple[Optional[int], Optio
         )
         db.add(pedido)
         db.flush()
+
+        # monta itens em JSONB (para pedidos_chat)
+        itens_json = []
+        for it in items:
+            produto = it.produto
+            if not produto:
+                continue
+            itens_json.append({
+                "id_produto": produto.id,
+                "nome": produto.nome,
+                "unidade": produto.unidade or "UN",
+                "quantidade": float(it.quantidade),
+                "valor_unitario": float(it.valor_unitario),
+                "subtotal": float(it.subtotal),
+            })
+
+        pedido_chat = PedidoChat(
+            id_pedido=pedido.id,
+            user_id=session_id,
+            preferencia_entrega=st.get("preferencia_entrega"),
+            forma_pagamento=st.get("forma_pagamento"),
+            bairro=st.get("bairro"),
+            cep=st.get("cep"),
+            endereco=st.get("endereco"),
+            cliente_nome=st.get("cliente_nome"),
+            cliente_telefone=st.get("cliente_telefone"),
+            total_aproximado=total,
+            itens=itens_json,
+            resumo=resumo,
+            state_snapshot=dict(st),
+        )
+        db.add(pedido_chat)
 
         # fecha orçamento (não apaga)
         orc.status = "fechado"
@@ -206,7 +239,6 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     """
     st = get_state(session_id)
 
-    # entra em modo checkout somente se o usuário pedir
     if _is_finalize_intent(message):
         patch_state(session_id, {"checkout_mode": True})
 
@@ -214,7 +246,6 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     if not st.get("checkout_mode"):
         return None, False
 
-    # se não está pronto, pede só o que falta
     if not ready_to_checkout(session_id):
         resumo = format_orcamento(session_id)
 
@@ -232,9 +263,7 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     # captura nome/telefone
     nome = _extract_name(message)
     if not nome and not st.get("cliente_nome"):
-        # ✅ aceita nome “cru”
         nome = _maybe_free_text_name(message)
-
     if nome:
         patch_state(session_id, {"cliente_nome": nome})
 
@@ -249,19 +278,18 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     if not st.get("cliente_telefone"):
         return "Agora me informe seu **telefone** para contato (ex.: 83999999999).", False
 
-    # cria pedido
     pedido_id, err = _create_pedido_from_orcamento(session_id)
     if err:
         return err, True
 
-    # ✅ pega o estado ATUALIZADO (antes era isso que deixava o resumo vazio)
+
     st = get_state(session_id)
     resumo = st.get("last_order_summary") or "(não consegui montar o resumo agora, mas o pedido foi registrado)"
 
     reply = (
         f"✅ Pedido **#{pedido_id}** registrado e encaminhado para um atendente finalizar.\n\n"
         f"Resumo do pedido:\n{resumo}\n\n"
-        "Um atendente humano vai revisar e finalizar seu pedido agora. 🙋‍♂️\n\n"
+        "Um atendente humano vai revisar e finalizar seu pedido ago ra. 🙋‍♂️\n\n"
         "Obs.: esse orçamento foi **fechado** (por isso um novo orçamento pode ficar vazio). "
         "Se quiser fazer um novo pedido, é só me dizer os itens."
     )

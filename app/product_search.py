@@ -1,109 +1,218 @@
 import re
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, Produto
-from app.text_utils import norm
+from app.rag_products import search_products_semantic
 
 
-def db_get_product_by_id(prod_id: int) -> Optional[Produto]:
-    """Busca um produto ativo pelo ID."""
+_GREETINGS = {
+    "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "eai", "e aí", "ei", "hello", "hi",
+}
+
+
+def _looks_like_greeting(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if t in _GREETINGS:
+        return True
+    if any(g in t and len(t) <= len(g) + 5 for g in _GREETINGS):
+        return True
+    return False
+
+
+def _sql_fallback_find_products(query: str, k: int = 6) -> List[Produto]:
     db: Session = SessionLocal()
     try:
+        q = (query or "").strip()
+        if len(q) < 2:
+            return []
+
         return (
             db.query(Produto)
-            .filter(Produto.id == int(prod_id), Produto.ativo == True)  # noqa: E712
-            .first()
+            .filter(
+                Produto.ativo == True,  # noqa: E712
+                Produto.nome.ilike(f"%{q}%"),
+            )
+            .limit(k)
+            .all()
         )
     finally:
         db.close()
 
 
-def _score_product(query_words: List[str], p: Produto) -> int:
-    text = f"{p.nome or ''} {p.descricao or ''}"
-    t = norm(text)
-
-    score = 0
-    for w in query_words:
-        if w in t:
-            score += 2
-    # pequeno bônus se bater no começo do nome
-    if p.nome:
-        name = norm(p.nome)
-        for w in query_words:
-            if name.startswith(w):
-                score += 1
-    return score
-
-
-def db_find_best_products(query: str, k: int = 6) -> List[Produto]:
-    """
-    Retorna os k produtos mais relevantes (ativos) para a string query.
-    Heurística simples por palavras-chave (sem embeddings).
-    """
-    q = norm(query)
-    words = [w for w in re.split(r"\s+", q) if len(w) >= 2]
-
+def db_get_product_by_id(product_id: int) -> Optional[Produto]:
     db: Session = SessionLocal()
     try:
-        produtos = db.query(Produto).filter(Produto.ativo == True).all()  # noqa: E712
-        if not produtos:
-            return []
-
-        scored = []
-        for p in produtos:
-            s = _score_product(words, p)
-            if s > 0:
-                scored.append((s, p))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top = [p for _, p in scored[:k]]
-
-        # fallback: se nada pontuou, devolve alguns quaisquer
-        if not top:
-            top = produtos[:k]
-
-        return top
+        return db.query(Produto).filter(Produto.id == product_id).first()
     finally:
         db.close()
 
 
-def format_options(produtos: List[Produto]) -> str:
+def _normalize_candidate(obj: Any, default_score: float = 0.40) -> Optional[Dict[str, Any]]:
     """
-    Formata lista numerada: "1) Nome — R$ .../UN — estoque ..."
+    Normaliza qualquer "candidato" (dict vindo do RAG ou ORM Produto)
+    para o formato:
+      {"id","nome","preco","unidade","estoque","score"}
     """
-    linhas = []
-    for i, p in enumerate(produtos, start=1):
-        preco = float(p.preco) if p.preco is not None else 0.0
-        un = p.unidade or "UN"
-        estoque = float(p.estoque_atual) if p.estoque_atual is not None else 0.0
-        linhas.append(f"{i}) {p.nome} — R$ {preco:.2f}/{un} — estoque {estoque:.0f}")
-    return "\n".join(linhas)
+    if obj is None:
+        return None
+
+    # Caso seja dict (ex.: vindo do RAG)
+    if isinstance(obj, dict):
+        pid = obj.get("id", None)
+        if pid is None:
+            pid = obj.get("product_id", None)
+        if pid is None:
+            return None
+
+        nome = obj.get("nome") or obj.get("name") or ""
+        if not nome:
+            return None
+
+        preco = obj.get("preco", 0.0)
+        unidade = obj.get("unidade") or obj.get("un") or "UN"
+        estoque = obj.get("estoque", None)
+        if estoque is None:
+            estoque = obj.get("estoque_atual", 0)
+
+        score = obj.get("score", default_score)
+
+        try:
+            pid = int(pid)
+        except Exception:
+            return None
+
+        try:
+            preco = float(preco) if preco is not None else 0.0
+        except Exception:
+            preco = 0.0
+
+        try:
+            estoque = float(estoque) if estoque is not None else 0.0
+        except Exception:
+            estoque = 0.0
+
+        try:
+            score = float(score) if score is not None else default_score
+        except Exception:
+            score = default_score
+
+        return {
+            "id": pid,
+            "nome": nome,
+            "preco": preco,
+            "unidade": unidade,
+            "estoque": estoque,
+            "score": score,
+        }
+
+    # Caso seja ORM Produto (fallback SQL)
+    pid = getattr(obj, "id", None)
+    nome = getattr(obj, "nome", "") or ""
+    if pid is None or not nome:
+        return None
+
+    preco = getattr(obj, "preco", 0.0)
+    estoque = getattr(obj, "estoque_atual", 0.0)
+    unidade = getattr(obj, "unidade", None) or "UN"
+
+    try:
+        preco = float(preco) if preco is not None else 0.0
+    except Exception:
+        preco = 0.0
+
+    try:
+        estoque = float(estoque) if estoque is not None else 0.0
+    except Exception:
+        estoque = 0.0
+
+    return {
+        "id": int(pid),
+        "nome": nome,
+        "preco": preco,
+        "unidade": unidade,
+        "estoque": estoque,
+        "score": float(default_score),
+    }
 
 
-def parse_choice_indices(message: str, max_len: int) -> List[int]:
+def db_find_best_products(query: str, k: int = 6) -> List[Dict[str, Any]]:
     """
-    Aceita: "1", "1 e 3", "1,3", "2 3"
-    Retorna índices 0-based válidos.
+    Retorna SEMPRE uma lista de dict no formato:
+      {"id","nome","preco","unidade","estoque","score"}
     """
-    t = norm(message)
-
-    nums = re.findall(r"\d+", t)
-    if not nums:
+    if _looks_like_greeting(query):
         return []
 
-    idxs = []
-    for n in nums:
-        val = int(n)
-        if 1 <= val <= max_len:
-            idxs.append(val - 1)
+    q = (query or "").strip()
+    if len(q) < 2:
+        return []
 
-    # remove duplicados mantendo ordem
-    out = []
+    # 1) tenta semantic search (RAG)
+    try:
+        sem = search_products_semantic(q, k=k, min_relevance=0.28)
+        if sem:
+            out: List[Dict[str, Any]] = []
+            for item in sem:
+                norm = _normalize_candidate(item, default_score=float(item.get("score", 0.65)) if isinstance(item, dict) else 0.65)
+                if norm:
+                    out.append(norm)
+            if out:
+                return out[:k]
+    except Exception:
+        pass
+
+    # 2) fallback SQL ILIKE
+    produtos = _sql_fallback_find_products(q, k=k)
+    out2: List[Dict[str, Any]] = []
+    for p in produtos:
+        norm = _normalize_candidate(p, default_score=0.40)
+        if norm:
+            out2.append(norm)
+
+    return out2[:k]
+
+
+def format_options(options: List[Dict[str, Any]]) -> str:
+    if not options:
+        return "Não encontrei opções no catálogo."
+
+    lines = []
+    for idx, o in enumerate(options, start=1):
+        nome = o.get("nome", "")
+        preco = float(o.get("preco", 0.0) or 0.0)
+        unidade = o.get("unidade", "UN") or "UN"
+        estoque = o.get("estoque", 0) or 0
+        lines.append(f"{idx}) {nome} — R$ {preco:.2f}/{unidade} — estoque {estoque:.0f}")
+    return "\n".join(lines)
+
+
+def parse_choice_indices(text: str, max_len: int) -> List[int]:
+    """
+    Aceita:
+    - "1"
+    - "1 e 3"
+    - "1,3"
+    - "2 4"
+
+    Retorna índices 0-based dentro do range [0, max_len-1]
+    """
+    if not text:
+        return []
+    nums = re.findall(r"\d+", text)
+    out: List[int] = []
+    for n in nums:
+        i = int(n)
+        if 1 <= i <= max_len:
+            out.append(i - 1)
+
     seen = set()
-    for x in idxs:
-        if x not in seen:
-            out.append(x)
-            seen.add(x)
-    return out
+    clean: List[int] = []
+    for i in out:
+        if i not in seen:
+            seen.add(i)
+            clean.append(i)
+    return clean

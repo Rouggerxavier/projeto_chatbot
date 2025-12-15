@@ -1,74 +1,79 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from sqlalchemy.orm import Session
+
 from database import SessionLocal, ChatSessionState
 
 
 DEFAULT_STATE: Dict[str, Any] = {
-    "preferencia_entrega": None,     # "entrega" | "retirada"
+    # checkout
+    "preferencia_entrega": None,   # "entrega" ou "retirada"
+    "forma_pagamento": None,       # "pix" / "cartão" / "dinheiro"
     "bairro": None,
     "cep": None,
     "endereco": None,
-    "forma_pagamento": None,         # "pix" | "cartão" | "dinheiro"
+
+    # cliente
     "cliente_nome": None,
     "cliente_telefone": None,
-    "checkout_active": False,
 
-    "pending_product_id": None,
-    "awaiting_qty": False,
-    "pending_suggested_units": None,
+    # controle do fluxo
+    "checkout_mode": False,
 
-    "last_suggestions": [],
-    "last_hint": None,
-    "last_requested_kg": None,
-
+    # último pedido finalizado
     "last_order_id": None,
+    "last_order_summary": None,
 }
 
 
-def get_state(session_id: str) -> Dict[str, Any]:
+def _merge_defaults(state: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(DEFAULT_STATE)
+    merged.update(state or {})
+    return merged
+
+
+def get_state(user_id: str) -> Dict[str, Any]:
     db: Session = SessionLocal()
     try:
-        row = db.query(ChatSessionState).filter(ChatSessionState.user_id == session_id).first()
+        row = db.query(ChatSessionState).filter(ChatSessionState.user_id == user_id).first()
         if not row:
-            row = ChatSessionState(user_id=session_id, data=dict(DEFAULT_STATE))
+            row = ChatSessionState(user_id=user_id, state=dict(DEFAULT_STATE))
             db.add(row)
             db.commit()
             db.refresh(row)
-
-        # garante chaves padrão
-        changed = False
-        for k, v in DEFAULT_STATE.items():
-            if k not in row.data:
-                row.data[k] = v
-                changed = True
-        if changed:
-            db.commit()
-
-        return dict(row.data)
+        return _merge_defaults(row.state or {})
     finally:
         db.close()
 
 
-def patch_state(session_id: str, patch: Dict[str, Any]) -> None:
+def patch_state(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     db: Session = SessionLocal()
     try:
-        row = db.query(ChatSessionState).filter(ChatSessionState.user_id == session_id).first()
+        row = db.query(ChatSessionState).filter(ChatSessionState.user_id == user_id).first()
         if not row:
-            row = ChatSessionState(user_id=session_id, data=dict(DEFAULT_STATE))
+            row = ChatSessionState(user_id=user_id, state=dict(DEFAULT_STATE))
             db.add(row)
             db.flush()
 
-        for k, v in patch.items():
-            row.data[k] = v
+        st = row.state or {}
+        st = _merge_defaults(st)
 
+        for k, v in (updates or {}).items():
+            st[k] = v
+
+        row.state = st
         db.commit()
+        db.refresh(row)
+        return _merge_defaults(row.state or {})
     finally:
         db.close()
 
 
-def set_state_value(session_id: str, key: str, value: Any) -> None:
-    patch_state(session_id, {key: value})
-
-
-def reset_state(session_id: str) -> None:
-    patch_state(session_id, dict(DEFAULT_STATE))
+def reset_state(user_id: str) -> None:
+    db: Session = SessionLocal()
+    try:
+        row = db.query(ChatSessionState).filter(ChatSessionState.user_id == user_id).first()
+        if row:
+            row.state = dict(DEFAULT_STATE)
+            db.commit()
+    finally:
+        db.close()
