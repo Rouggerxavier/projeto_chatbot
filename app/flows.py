@@ -1,5 +1,6 @@
+import re
 import traceback
-from typing import Tuple, Optional, Any, Dict, List
+from typing import Optional, Tuple, Any, Dict, List
 
 from app.constants import HORARIO_LOJA
 from app.text_utils import (
@@ -31,41 +32,62 @@ from app.checkout import handle_checkout, ready_to_checkout
 from app.session_state import get_state, patch_state
 
 
-def _as_suggestion_dict(item: Any) -> Optional[Dict[str, Any]]:
+# -------------------------
+# Helpers de robustez
+# -------------------------
+
+def _safe_option_id(o: Any) -> Optional[int]:
     """
-    Normaliza um item de sugestão para:
-      {"id": int, "nome": str}
-
-    Aceita:
-      - dict vindo do RAG/SQL: {"product_id":..., "nome":...}
-      - dict já normalizado: {"id":..., "nome":...}
-      - objeto ORM Produto: .id / .nome
+    Aceita dicts com chaves diferentes (product_id / id / produto_id)
+    e também objetos ORM (p.id).
     """
-    if item is None:
+    if o is None:
         return None
-
-    # dict do RAG/SQL
-    if isinstance(item, dict):
-        if "id" in item and "nome" in item:
-            try:
-                return {"id": int(item["id"]), "nome": str(item["nome"])}
-            except Exception:
-                return None
-        if "product_id" in item and "nome" in item:
-            try:
-                return {"id": int(item["product_id"]), "nome": str(item["nome"])}
-            except Exception:
-                return None
-        return None
-
-    # ORM Produto
-    pid = getattr(item, "id", None)
-    nome = getattr(item, "nome", None)
-    if pid is not None and nome is not None:
+    if isinstance(o, dict):
+        pid = o.get("product_id")
+        if pid is None:
+            pid = o.get("id")
+        if pid is None:
+            pid = o.get("produto_id")
         try:
-            return {"id": int(pid), "nome": str(nome)}
+            return int(pid) if pid is not None else None
         except Exception:
             return None
+    # ORM / objeto
+    pid = getattr(o, "id", None)
+    try:
+        return int(pid) if pid is not None else None
+    except Exception:
+        return None
+
+
+def _safe_option_name(o: Any) -> str:
+    if isinstance(o, dict):
+        return str(o.get("nome") or o.get("name") or "")
+    return str(getattr(o, "nome", "") or "")
+
+
+def _looks_like_bad_unit_request(message: str, hint: str) -> Optional[str]:
+    """
+    Ex.: '20 metros de areia' (m/metros não é unidade boa pra areia no catálogo)
+    Ensina o usuário a pedir.
+    """
+    t = norm(message)
+    h = norm(hint or "")
+
+    # areia costuma ser m³ no catálogo, então "metros" e "m" confundem.
+    if "areia" in h:
+        # se ele falou m/metros mas não falou m3 / m³
+        if re.search(r"\b(metro|metros)\b", t) or re.search(r"\b\d+\s*m\b", t):
+            if not re.search(r"\b(m3|m³)\b", t):
+                return (
+                    "Entendi 🙂 Só uma dica: **areia normalmente é vendida em m³ (metro cúbico)**.\n\n"
+                    "Tente assim:\n"
+                    "• **quero 1m³ de areia fina**\n"
+                    "• **areia média 2m³**\n"
+                    "• ou só **areia fina** (que eu te mostro as opções)\n\n"
+                    "Qual você prefere?"
+                )
 
     return None
 
@@ -104,11 +126,14 @@ def reply_after_preference(session_id: str) -> str:
 
 
 def set_pending_for_qty(session_id: str, produto, requested_kg: Optional[float]) -> str:
-    patch_state(session_id, {
-        "pending_product_id": produto.id,
-        "awaiting_qty": True,
-        "pending_suggested_units": None,
-    })
+    patch_state(
+        session_id,
+        {
+            "pending_product_id": produto.id,
+            "awaiting_qty": True,
+            "pending_suggested_units": None,
+        },
+    )
 
     ask = "\n\nQuantas unidades você quer? (ex.: 1, 4 sacos ou 200kg)"
 
@@ -142,11 +167,14 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
 
     produto = db_get_product_by_id(int(st["pending_product_id"]))
     if not produto:
-        patch_state(session_id, {
-            "awaiting_qty": False,
-            "pending_product_id": None,
-            "pending_suggested_units": None,
-        })
+        patch_state(
+            session_id,
+            {
+                "awaiting_qty": False,
+                "pending_product_id": None,
+                "pending_suggested_units": None,
+            },
+        )
         return "Certo — não consegui localizar esse produto agora. Me diga novamente qual produto você quer."
 
     t = (message or "").strip().lower()
@@ -186,11 +214,14 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
 
     estoque = float(produto.estoque_atual) if produto.estoque_atual is not None else 0.0
     if estoque <= 0:
-        patch_state(session_id, {
-            "awaiting_qty": False,
-            "pending_product_id": None,
-            "pending_suggested_units": None,
-        })
+        patch_state(
+            session_id,
+            {
+                "awaiting_qty": False,
+                "pending_product_id": None,
+                "pending_suggested_units": None,
+            },
+        )
         return f"Encontrei **{produto.nome}**, mas está **sem estoque** no momento. Quer escolher outra opção?"
 
     if qty_un > estoque:
@@ -198,11 +229,14 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
 
     ok, msg_add = add_item_to_orcamento(session_id, produto, float(qty_un))
 
-    patch_state(session_id, {
-        "awaiting_qty": False,
-        "pending_product_id": None,
-        "pending_suggested_units": None,
-    })
+    patch_state(
+        session_id,
+        {
+            "awaiting_qty": False,
+            "pending_product_id": None,
+            "pending_suggested_units": None,
+        },
+    )
 
     resumo = format_orcamento(session_id)
     if not ok:
@@ -211,44 +245,72 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
 
 
 def auto_suggest_products(message: str, session_id: str) -> Optional[str]:
+    # só tenta sugerir se parecer pedido de produto
     if not has_product_intent(message):
         return None
 
     hint = extract_product_hint(message)
     if not hint or len(hint) < 2:
-        return None
+        return (
+            "Não consegui identificar o produto 😅\n\n"
+            "Tente ser mais direto, por exemplo:\n"
+            "• **quero areia fina**\n"
+            "• **quero cimento CP II 50kg**\n"
+            "• **quero trena 5m**"
+        )
 
-    produtos = db_find_best_products(hint, k=5)  # <- lista de dicts
-    if not produtos:
-        return None
+    # dica de unidade (ex.: "20 metros de areia")
+    teach = _looks_like_bad_unit_request(message, hint)
+    if teach:
+        return teach
+
+    options = db_find_best_products(hint, k=6) or []
+    if not options:
+        return (
+            f"Não encontrei nada no catálogo parecido com **{hint}**.\n\n"
+            "Tente assim:\n"
+            "• **areia fina** / **areia média**\n"
+            "• **cimento CP II 50kg**\n"
+            "• **trena 5m**"
+        )
 
     requested_kg = extract_kg_quantity(message)
 
-    normalized: List[Dict[str, Any]] = []
-    for p in produtos:
-        s = _as_suggestion_dict(p)
-        if s:
-            normalized.append(s)
+    # guarda sugestões SEM quebrar com formatos diferentes
+    last_suggestions: List[Dict[str, Any]] = []
+    for o in options:
+        pid = _safe_option_id(o)
+        if pid is None:
+            continue
+        last_suggestions.append({"id": pid, "nome": _safe_option_name(o)})
 
-    if not normalized:
-        return None
+    if not last_suggestions:
+        return (
+            "Achei opções, mas não consegui identificar o ID delas (erro de dados).\n"
+            "Pode tentar novamente com o nome do produto? Ex.: **areia fina**"
+        )
 
-    patch_state(session_id, {
-        "last_suggestions": normalized,
-        "last_hint": hint,
-        "last_requested_kg": requested_kg,
-    })
+    patch_state(
+        session_id,
+        {
+            "last_suggestions": last_suggestions,
+            "last_hint": hint,
+            "last_requested_kg": requested_kg,
+        },
+    )
 
     extra = ""
-    if requested_kg is not None and normalized:
-        conv = suggest_units_from_packaging(normalized[0]["nome"], requested_kg)
+    # se pediu kg e a 1ª opção tem embalagem, sugere conversão
+    first_prod = db_get_product_by_id(int(last_suggestions[0]["id"]))
+    if requested_kg is not None and first_prod:
+        conv = suggest_units_from_packaging(first_prod.nome, requested_kg)
         if conv:
             _, conv_text = conv
             extra = f"\n\nPelo que você pediu: **{conv_text}**."
 
     return (
         f"Encontrei estas opções no catálogo para **{hint}**:\n\n"
-        f"{format_options(produtos)}\n\n"
+        f"{format_options(options)}\n\n"
         "Qual você quer? (responda 1, 2, 3… ou escreva o nome parecido)"
         + extra
     )
@@ -260,12 +322,16 @@ def handle_suggestions_choice(session_id: str, message: str) -> Optional[str]:
     if not suggestions:
         return None
 
-    # ✅ CHAMADA POSICIONAL: não quebra se o nome do parâmetro mudar (max_n/max_len/etc)
-    indices = parse_choice_indices(message, len(suggestions))
-    if not indices:
+    # parse_choice_indices retorna 1-based
+    indices_1based = parse_choice_indices(message, max_n=len(suggestions))
+    if not indices_1based:
         return None
 
-    chosen_id = suggestions[indices[0] - 1]["id"]  # indices é 1-based
+    idx0 = indices_1based[0] - 1
+    if idx0 < 0 or idx0 >= len(suggestions):
+        return None
+
+    chosen_id = suggestions[idx0]["id"]
     requested_kg = st.get("last_requested_kg")
 
     patch_state(session_id, {"last_suggestions": [], "last_hint": None, "last_requested_kg": None})
@@ -304,11 +370,11 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, reply, needs_human)
             return reply, needs_human
 
-        # registra preferências/endereço
+        # preferências/endereço
         maybe_register_address(message, session_id)
         handle_preferences(message, session_id)
 
-        # ✅ checkout (só quando usuário disser finalizar/fechar)
+        # checkout (apenas quando usuário disser finalizar/fechar)
         checkout_reply, checkout_needs = handle_checkout(message, session_id)
         if checkout_reply:
             needs_human = checkout_needs
@@ -316,14 +382,14 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, checkout_reply, needs_human)
             return checkout_reply, needs_human
 
-        # ✅ pending qty primeiro
+        # pending qty primeiro
         pending = handle_pending_qty(session_id, message)
         if pending:
             pending = sanitize_reply(pending)
             save_chat_db(session_id, message, pending, needs_human)
             return pending, needs_human
 
-        # ✅ prefs-only (entrega/pix/cep/bairro)
+        # prefs-only (entrega/pix/cep/bairro)
         if message_is_preferences_only(message, session_id):
             reply = reply_after_preference(session_id)
             reply = sanitize_reply(reply)
@@ -337,7 +403,7 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, choice, needs_human)
             return choice, needs_human
 
-        # sugestão automática
+        # sugestão automática (com ensino quando não entender)
         suggested = auto_suggest_products(message, session_id)
         if suggested:
             suggested = sanitize_reply(suggested)
@@ -346,7 +412,7 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
 
         # explicação do "orçamento vazio" pós fechamento
         st = get_state(session_id)
-        if "orçamento" in norm(message) and "vazio" in norm(message) and st.get("last_order_summary"):
+        if "orcamento" in norm(message) and "vazio" in norm(message) and st.get("last_order_summary"):
             reply = (
                 "Seu orçamento aparece vazio porque o pedido anterior foi **finalizado** e o orçamento foi **fechado**.\n\n"
                 f"Resumo do último pedido:\n{st['last_order_summary']}\n\n"
@@ -356,12 +422,16 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, reply, needs_human)
             return reply, needs_human
 
-        # fallback
+        # fallback com instruções (melhor que só repetir exemplo)
         resumo = format_orcamento(session_id)
         reply = (
             f"{resumo}\n\n"
-            "Ex.: “quero 200kg de cimento”, “quero 4 sacos de cimento CP II”, “uma trena 5m”.\n"
-            "Se quiser finalizar, diga **finalizar**."
+            "Não consegui entender exatamente o que você quer 😅\n\n"
+            "Tente ser mais direto, por exemplo:\n"
+            "• **quero areia fina**\n"
+            "• **quero cimento CP II 50kg**\n"
+            "• **quero trena 5m**\n\n"
+            "Se quiser finalizar um pedido já montado, diga **finalizar**."
         )
         reply = sanitize_reply(reply)
         save_chat_db(session_id, message, reply, needs_human)
