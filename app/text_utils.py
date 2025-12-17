@@ -9,8 +9,7 @@ from app.constants import (
     INTENT_KEYWORDS,
 )
 
-# ✅ guardrails anti-alucinação
-from app.guardrails import apply_guardrails
+from app.guardrails import apply_guardrails, SAFE_NOTE
 
 
 # Heurística simples para detectar quando a mensagem "parece um pedido" mesmo sem "quero".
@@ -44,38 +43,55 @@ def norm(s: str) -> str:
     s = strip_accents((s or "").lower())
     s = re.sub(r"[^a-z0-9\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
+
     # normalizações comuns pra cimento
     s = s.replace("cpii", "cp ii").replace("cp2", "cp ii")
     s = s.replace("cpiii", "cp iii").replace("cp3", "cp iii")
     return s
 
 
+def _ensure_safe_note_once(text: str) -> str:
+    if not text:
+        return text
+    if SAFE_NOTE.lower() in text.lower():
+        return text
+    return text.rstrip() + "\n\n" + SAFE_NOTE
+
+
 def sanitize_reply(text: str) -> str:
     """
-    1) remove linhas proibidas pelo seu FORBIDDEN_REPLY_REGEX
-    2) aplica guardrails anti-alucinação (email/rastreio/qr pix/etc)
+    Ordem:
+    1) filtro legado por FORBIDDEN_REPLY_REGEX (remove linhas suspeitas/indesejadas)
+    2) guardrails (remove claims tipo email/rastreio/qr pix e adiciona SAFE_NOTE se necessário)
+
+    Importante: NÃO anexar nota duas vezes.
     """
     if not text:
         return text
 
     cleaned = text
 
-    # filtro antigo (seu)
+    # 1) filtro legado (apenas remove linhas)
     if FORBIDDEN_REPLY_REGEX.search(cleaned):
         kept = []
         for ln in cleaned.splitlines():
             if FORBIDDEN_REPLY_REGEX.search(ln):
                 continue
             kept.append(ln)
-
         cleaned = "\n".join(kept).strip()
+
         if not cleaned:
             cleaned = "Certo! Me diga qual produto e quantidade você quer."
 
-        cleaned += "\n\nObs.: Eu não envio e-mail nem rastreio; eu apenas monto o orçamento/pedido aqui no chat."
+    # 2) guardrails (pode remover e/ou anexar nota segura)
+    cleaned, changed = apply_guardrails(cleaned)
 
-    # ✅ guardrails novos
-    cleaned, _ = apply_guardrails(cleaned)
+    # Se o filtro legado removeu coisas mas guardrails não anexou nota,
+    # ainda assim garantimos nota UMA vez para evitar “alucinação recorrente”.
+    # (opcional, mas ajuda)
+    if FORBIDDEN_REPLY_REGEX.search(text) and SAFE_NOTE.lower() not in cleaned.lower():
+        cleaned = _ensure_safe_note_once(cleaned)
+
     return cleaned
 
 
@@ -85,13 +101,16 @@ def is_greeting(message: str) -> bool:
     if not t:
         return True
 
+    # igualzinho
     if t in GREETINGS:
         return True
 
+    # variações curtas
     for g in GREETINGS:
         if t.startswith(g) and len(t) <= len(g) + 6:
             return True
 
+    # "xbom dia" / "x bom dia"
     if re.match(r"^x+\s*(bom dia|boa tarde|boa noite)\b", t) and len(t.split()) <= 3:
         return True
 
@@ -114,11 +133,14 @@ def is_hours_question(message: str) -> bool:
 
 
 def _looks_like_preferences_only(t: str) -> bool:
+    # Se for só preferências (entrega/pix/cep/bairro), não é produto
     if any(w in t for w in ["pix", "cartao", "dinheiro", "entrega", "retirada", "bairro", "cep", "endereco"]):
+        # mas se também tiver palavra de produto, pode ser pedido
         if any(pw in t for pw in BASE_PRODUCT_WORDS):
             return False
         return True
 
+    # se for basicamente um CEP
     if CEP_REGEX_SIMPLE.search(t) and len(t.split()) <= 2:
         return True
 
@@ -131,18 +153,28 @@ def has_product_intent(message: str) -> bool:
     if not t:
         return False
 
+    # Nunca considerar produto se for cumprimento/horário/carrinho
     if is_greeting(message) or is_hours_question(message) or is_cart_show_request(message) or is_cart_reset_request(message):
         return False
 
+    # Preferências isoladas não são produto
     if _looks_like_preferences_only(t):
         return False
 
+    # Se for literalmente só palavras "não-produto" (ex.: "pix", "entrega", "ok")
+    tokens = set(t.split())
+    if tokens and tokens.issubset(NON_PRODUCT_WORDS):
+        return False
+
+    # Intenção explícita
     if any(k in t for k in INTENT_KEYWORDS):
         return True
 
+    # Quantidade/unidade -> provavelmente pedido
     if QTY_UNITS_REGEX.search(t):
         return True
 
+    # Contém palavra-base de produto
     if any(re.search(rf"\b{re.escape(w)}\b", t) for w in BASE_PRODUCT_WORDS):
         return True
 

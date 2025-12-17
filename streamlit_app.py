@@ -8,6 +8,10 @@ st.set_page_config(page_title="Chat feirão da construção", page_icon="🧱")
 
 st.title("🤖 Chatbot feirão da construção")
 
+# session_id retornado pela API (usado quando user_id ficar vazio)
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = None
+
 # guarda histórico na sessão do streamlit
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
@@ -27,14 +31,20 @@ if prompt := st.chat_input("Digite sua mensagem"):
 
     # chama sua API FastAPI
     try:
+        # Se o usuário não informar um user_id, reutilizamos o session_id retornado na primeira resposta
+        effective_id = (user_id or "").strip() or st.session_state.get("session_id")
+        payload = {"message": prompt, "user_id": effective_id} if effective_id else {"message": prompt}
+
         resp = requests.post(
             API_URL,
-            json={"message": prompt, "user_id": user_id or None},
+            json=payload,
             timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
         reply = data.get("reply", "Não recebi resposta do servidor.")
+        # guarda para as próximas mensagens (quando user_id estiver vazio)
+        st.session_state["session_id"] = data.get("session_id") or st.session_state.get("session_id")
     except Exception as e:
         reply = f"Erro ao chamar a API: {e}"
 

@@ -9,12 +9,19 @@ from app.rag_products import rebuild_product_index
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # cria tabelas
-    init_db()
+    try:
+        init_db()
+    except Exception as e:
+        # não derruba o servidor se o banco estiver fora no boot
+        print("[WARN] init_db falhou:", e)
 
     # (re)indexa catálogo no vector store
     # catálogo pequeno -> pode recriar sempre no startup sem dor
-    rebuild_product_index()
-
+    try:
+        rebuild_product_index()
+    except Exception as e:
+        # não derruba o servidor se embeddings/chroma falharem
+        print("[WARN] rebuild_product_index falhou:", e)
     yield
 
 

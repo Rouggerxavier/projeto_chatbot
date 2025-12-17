@@ -190,16 +190,43 @@ def format_options(options: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def parse_choice_indices(text: str, max_len: int) -> List[int]:
+def parse_choice_indices(text: str, max_n: int = None, max_len: int = None) -> List[int]:
     """
     Aceita:
-    - "1"
-    - "1 e 3"
-    - "1,3"
-    - "2 4"
+      - "1"
+      - "1 e 3"
+      - "1,3"
+      - "2 4"
 
-    Retorna índices 0-based dentro do range [0, max_len-1]
+    Compatibilidade:
+      - versões antigas chamavam parse_choice_indices(text, max_len=...)
+      - flows.py chama parse_choice_indices(text, max_n=...)
+
+    Retorna índices **1-based** dentro do range [1, max_total].
     """
+    if not text:
+        return []
+
+    max_total = max_n if max_n is not None else max_len
+    if not max_total or max_total <= 0:
+        return []
+
+    nums = re.findall(r"\d+", text)
+    out: List[int] = []
+    for n in nums:
+        i = int(n)
+        if 1 <= i <= max_total:
+            out.append(i)
+
+    # remove duplicados preservando ordem
+    seen = set()
+    clean: List[int] = []
+    for i in out:
+        if i not in seen:
+            seen.add(i)
+            clean.append(i)
+    return clean
+
     if not text:
         return []
     nums = re.findall(r"\d+", text)

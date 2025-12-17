@@ -14,12 +14,7 @@ FORBIDDEN_REPLY_PATTERNS = [
     r"pedido foi enviado",
     r"pedido enviado",
     r"rastreio",
-    r"tracking",
-    r"será debitado do seu pix",
-    r"debitar do pix",
-    r"qr\s*code",
-    r"qrcode",
-    r"produto com o id",
+    r"tracking",    r"produto com o id",
     r"id \d+",
     r"por favor, aguarde",
 ]

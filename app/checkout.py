@@ -15,64 +15,52 @@ from app.session_state import get_state, patch_state
 from app.cart_service import get_open_orcamento, format_orcamento
 from app.text_utils import norm
 
+# Mercado Pago (opcional: se o módulo não existir, o checkout segue sem link)
+try:
+    from app.mercadopago_payments import create_checkout_preference, choose_best_payment_link
+except Exception:  # pragma: no cover
+    create_checkout_preference = None  # type: ignore
+    choose_best_payment_link = None  # type: ignore
 
-FINALIZE_TRIGGERS = [
+
+FINALIZE_INTENTS = [
     "finalizar",
-    "finalizar pedido",
+    "fechar",
     "fechar pedido",
+    "finalizar pedido",
     "fechar o pedido",
     "finalizar o pedido",
-    "pode finalizar",
     "pode fechar",
-    "quero finalizar",
-    "quero fechar",
+    "pode finalizar",
+    "confirmar",
 ]
 
 
 def _is_finalize_intent(message: str) -> bool:
-    t = norm(message).strip()
-    return any(g == t or g in t for g in FINALIZE_TRIGGERS)
+    t = norm(message or "")
+    return any(x in t for x in FINALIZE_INTENTS)
 
 
-def _extract_phone(message: str) -> Optional[str]:
-    m = re.search(r"(\d[\d\s\-().]{7,})", message or "")
-    if not m:
-        return None
-    digits = re.sub(r"\D", "", m.group(1))
-    if len(digits) < 8:
-        return None
-    return digits
-
-
-def _extract_name(message: str) -> Optional[str]:
-    msg = (message or "").strip()
-    pats = [
-        r"me chamo ([A-Za-zÀ-ÿ\s]+)",
-        r"meu nome é ([A-Za-zÀ-ÿ\s]+)",
-        r"meu nome eh ([A-Za-zÀ-ÿ\s]+)",
-        r"sou ([A-Za-zÀ-ÿ\s]+)",
-    ]
-    for pat in pats:
-        m = re.search(pat, msg, flags=re.IGNORECASE)
-        if m:
-            return m.group(1).strip().strip(".!,")
+def extract_phone(message: str) -> Optional[str]:
+    t = message or ""
+    digits = re.sub(r"\D", "", t)
+    # telefone BR costuma ter 10-13 dígitos (com DDI)
+    if 10 <= len(digits) <= 13:
+        return digits
     return None
 
 
-def _maybe_free_text_name(message: str) -> Optional[str]:
+def extract_name(message: str) -> Optional[str]:
     raw = (message or "").strip()
     if not raw:
         return None
 
-    t = norm(raw)
-
-    if t in {"ok", "certo", "beleza", "finalizar", "fechar", "entrega", "retirada", "pix", "cartao", "cartão", "dinheiro"}:
-        return None
-
+    # evita pegar "2", "50kg" etc.
     digits = re.sub(r"\D", "", raw)
     if len(digits) >= 6:
         return None
 
+    # precisa ter pelo menos 1 letra
     if not re.search(r"[A-Za-zÀ-ÿ]", raw):
         return None
 
@@ -99,9 +87,16 @@ def ready_to_checkout(session_id: str) -> bool:
     if not st.get("forma_pagamento"):
         return False
 
+    # se entrega, exige endereço
     if st.get("preferencia_entrega") == "entrega":
-        if not (st.get("bairro") or st.get("cep") or st.get("endereco")):
+        if not st.get("endereco"):
             return False
+
+    # exige nome e telefone
+    if not st.get("cliente_nome"):
+        return False
+    if not st.get("cliente_telefone"):
+        return False
 
     return True
 
@@ -153,74 +148,48 @@ def _create_pedido_from_orcamento(session_id: str) -> Tuple[Optional[int], Optio
             cliente = Cliente(nome=nome, telefone=telefone)
             db.add(cliente)
             db.flush()
-        else:
-            if nome and (not cliente.nome or cliente.nome.strip() == "Cliente do chat"):
-                cliente.nome = nome
 
-        # opcional: salva endereço/bairro no cadastro do cliente
-        if st.get("bairro"):
-            cliente.bairro = st.get("bairro")
-        if st.get("endereco"):
-            cliente.endereco = st.get("endereco")
-
-        observacoes = []
-        observacoes.append("Origem: chatbot")
-        observacoes.append(f"Entrega/retirada: {st.get('preferencia_entrega')}")
-        observacoes.append(f"Pagamento: {st.get('forma_pagamento')}")
-        if st.get("bairro"):
-            observacoes.append(f"Bairro: {st.get('bairro')}")
-        if st.get("cep"):
-            observacoes.append(f"CEP: {st.get('cep')}")
-        if st.get("endereco"):
-            observacoes.append(f"Endereço: {st.get('endereco')}")
+        forma_pagamento = st.get("forma_pagamento") or ""
+        preferencia_entrega = st.get("preferencia_entrega") or ""
+        endereco = st.get("endereco") or ""
 
         pedido = Pedido(
             id_cliente=cliente.id,
-            status="aberto",
-            observacoes="\n".join(observacoes),
+            status="novo",
+            needs_human=True,
         )
         db.add(pedido)
         db.flush()
 
-        # monta itens em JSONB (para pedidos_chat)
-        itens_json = []
-        for it in items:
-            produto = it.produto
-            if not produto:
-                continue
-            itens_json.append({
-                "id_produto": produto.id,
-                "nome": produto.nome,
-                "unidade": produto.unidade or "UN",
-                "quantidade": float(it.quantidade),
-                "valor_unitario": float(it.valor_unitario),
-                "subtotal": float(it.subtotal),
-            })
-
         pedido_chat = PedidoChat(
             id_pedido=pedido.id,
-            user_id=session_id,
-            preferencia_entrega=st.get("preferencia_entrega"),
-            forma_pagamento=st.get("forma_pagamento"),
-            bairro=st.get("bairro"),
-            cep=st.get("cep"),
-            endereco=st.get("endereco"),
-            cliente_nome=st.get("cliente_nome"),
-            cliente_telefone=st.get("cliente_telefone"),
-            total_aproximado=total,
-            itens=itens_json,
+            id_orcamento=orc.id,
+            forma_pagamento=forma_pagamento,
+            preferencia_entrega=preferencia_entrega,
+            endereco=endereco,
+            itens_json=[
+                {
+                    "id_produto": it.id_produto,
+                    "quantidade": float(it.quantidade),
+                    "valor_unitario": float(it.valor_unitario),
+                    "subtotal": float(it.subtotal),
+                }
+                for it in items
+            ],
+            total=float(total),
             resumo=resumo,
-            state_snapshot=dict(st),
         )
         db.add(pedido_chat)
 
-        # fecha orçamento (não apaga)
+        # fecha orçamento
         orc.status = "fechado"
+
         db.commit()
 
         patch_state(session_id, {
             "last_order_id": pedido.id,
             "last_order_summary": resumo,
+            "last_order_total": total,
             "checkout_mode": False,
         })
 
@@ -251,45 +220,78 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
 
         faltas = []
         if not st.get("preferencia_entrega"):
-            faltas.append("**entrega** ou **retirada**")
+            faltas.append("• Você prefere **entrega** ou **retirada**?")
         if not st.get("forma_pagamento"):
-            faltas.append("forma de pagamento (**PIX**, **cartão** ou **dinheiro**)")
-        if st.get("preferencia_entrega") == "entrega":
-            if not (st.get("bairro") or st.get("cep") or st.get("endereco")):
-                faltas.append("**bairro** ou **CEP/endereço** para entrega")
+            faltas.append("• A forma de pagamento é **pix**, **cartão** ou **dinheiro**?")
+        if st.get("preferencia_entrega") == "entrega" and not st.get("endereco"):
+            faltas.append("• Me passe o **endereço** (rua, número e bairro/CEP).")
+        if not st.get("cliente_nome"):
+            faltas.append("• Qual seu **nome**?")
+        if not st.get("cliente_telefone"):
+            faltas.append("• Qual seu **telefone** (com DDD)?")
 
-        return (f"{resumo}\n\nPara finalizar, preciso de: " + ", ".join(faltas) + ".", False)
+        if faltas:
+            return (
+                "Para finalizar, preciso de mais algumas informações:\n"
+                + "\n".join(faltas)
+                + "\n\n"
+                + "Resumo do orçamento atual:\n"
+                + resumo,
+                True,
+            )
 
-    # captura nome/telefone
-    nome = _extract_name(message)
-    if not nome and not st.get("cliente_nome"):
-        nome = _maybe_free_text_name(message)
-    if nome:
-        patch_state(session_id, {"cliente_nome": nome})
+        return None, False
 
-    tel = _extract_phone(message)
-    if tel:
-        patch_state(session_id, {"cliente_telefone": tel})
-
-    st = get_state(session_id)
-
+    # coleta nome/telefone se ainda faltou
     if not st.get("cliente_nome"):
-        return "Para eu encaminhar ao atendente, me diga seu **nome** (ex.: “me chamo João” ou apenas “João”).", False
-    if not st.get("cliente_telefone"):
-        return "Agora me informe seu **telefone** para contato (ex.: 83999999999).", False
+        nm = extract_name(message)
+        if nm:
+            patch_state(session_id, {"cliente_nome": nm})
+            return "Perfeito. Agora me informe seu **telefone** (com DDD).", True
+        return "Qual seu **nome**?", True
 
+    if not st.get("cliente_telefone"):
+        ph = extract_phone(message)
+        if ph:
+            patch_state(session_id, {"cliente_telefone": ph})
+            return "Obrigado! Agora confirme: deseja **finalizar** o pedido?", True
+        return "Qual seu **telefone** (com DDD)?", True
+
+    # cria pedido
     pedido_id, err = _create_pedido_from_orcamento(session_id)
     if err:
         return err, True
-
+    if not pedido_id:
+        return "Não consegui finalizar agora. Um atendente pode revisar.", True
 
     st = get_state(session_id)
     resumo = st.get("last_order_summary") or "(não consegui montar o resumo agora, mas o pedido foi registrado)"
 
+    # Se houver Mercado Pago configurado, gera um link de pagamento para anexar na mensagem final
+    payment_block = ""
+    forma = (st.get("forma_pagamento") or "").strip().lower()
+    total = float(st.get("last_order_total") or 0.0)
+    if create_checkout_preference and total > 0 and forma in {"pix", "cartão", "cartao"}:
+        try:
+            pref = create_checkout_preference(pedido_id=int(pedido_id), total=float(total))
+            link = (
+                choose_best_payment_link(pref)
+                if choose_best_payment_link
+                else (pref.get("init_point") or pref.get("sandbox_init_point"))
+            )
+            if link:
+                if forma == "pix":
+                    payment_block = f"\n\n📲 Para pagar no **PIX**, use este link:\n{link}"
+                else:
+                    payment_block = f"\n\n💳 Para pagar no **cartão**, use este link:\n{link}"
+        except Exception:
+            payment_block = ""
+
     reply = (
         f"✅ Pedido **#{pedido_id}** registrado e encaminhado para um atendente finalizar.\n\n"
-        f"Resumo do pedido:\n{resumo}\n\n"
-        "Um atendente humano vai revisar e finalizar seu pedido ago ra. 🙋‍♂️\n\n"
+        f"Resumo do pedido:\n{resumo}"
+        f"{payment_block}\n\n"
+        "Um atendente humano vai revisar e finalizar seu pedido agora. 🙋‍♂️\n\n"
         "Obs.: esse orçamento foi **fechado** (por isso um novo orçamento pode ficar vazio). "
         "Se quiser fazer um novo pedido, é só me dizer os itens."
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
@@ -134,13 +135,75 @@ def _ensure_index_ready() -> None:
             _index_built = True
 
 
+def _distance_to_score(x: float) -> float:
+    """Converte um 'score' ou 'distance' em algo comparável em [0,1]."""
+    try:
+        v = float(x)
+    except Exception:
+        return 0.0
+    # Se for distância (>=0): 0 é melhor -> score = 1/(1+dist)
+    if v >= 0:
+        return 1.0 / (1.0 + v)
+    # Se vier similaridade negativa (ex.: dot-product), aplica sigmoid
+    try:
+        return 1.0 / (1.0 + math.exp(-v))
+    except Exception:
+        return 0.0
+
+
 def search_products(query: str, k: int = 6, min_score: float = 0.15) -> List[Dict[str, Any]]:
     """
     Busca produtos por similaridade semântica.
     Retorna lista de dicts com {id_produto, nome, unidade, preco, estoque, score}.
+
+    Evita o warning de "relevance scores fora de [0,1]" usando, primeiro,
+    similarity_search_with_score (distância) e convertendo para score.
     """
     if not query or not query.strip():
         return []
+
+    _ensure_index_ready()
+    if _vectorstore is None:
+        return []
+
+    q = query.strip()
+
+    docs_scores: List[Tuple[Document, float]] = []
+
+    # 1) preferir "with_score" (geralmente distância)
+    try:
+        docs_dist = _vectorstore.similarity_search_with_score(q, k=k)  # type: ignore[attr-defined]
+        docs_scores = [(doc, _distance_to_score(dist)) for doc, dist in docs_dist]
+    except Exception:
+        # 2) fallback: relevance_scores (normaliza)
+        try:
+            raw: List[Tuple[Document, float]] = _vectorstore.similarity_search_with_relevance_scores(q, k=k)
+            docs_scores = [(doc, _distance_to_score(score)) for doc, score in raw]
+        except Exception:
+            # 3) último fallback: sem score
+            docs = _vectorstore.similarity_search(q, k=k)
+            docs_scores = [(d, 0.5) for d in docs]
+
+    results: List[Dict[str, Any]] = []
+    for doc, score in docs_scores:
+        md = doc.metadata or {}
+        s = float(score)
+        if s < float(min_score):
+            continue
+
+        results.append(
+            {
+                "id_produto": md.get("id_produto"),
+                "nome": md.get("nome"),
+                "unidade": md.get("unidade"),
+                "preco": md.get("preco"),
+                "estoque": md.get("estoque"),
+                "score": s,
+            }
+        )
+
+    results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    return results
 
     _ensure_index_ready()
     if _vectorstore is None:
@@ -206,9 +269,11 @@ def format_rag_options(items: List[Dict[str, Any]]) -> str:
 
     return "\n".join(lines)
 
-def search_products_semantic(query: str, k: int = 6) -> List[Dict[str, Any]]:
-    # compatibilidade com import antigo
-    return search_products(query=query, k=k)
+def search_products_semantic(query: str, k: int = 6, min_relevance: float = None, min_score: float = None) -> List[Dict[str, Any]]:
+    """Compatibilidade com chamadas antigas (min_relevance) e novas (min_score)."""
+    if min_score is None:
+        min_score = 0.15 if min_relevance is None else float(min_relevance)
+    return search_products(query=query, k=k, min_score=float(min_score))
 
 def rebuild_product_index(force: bool = False) -> int:
     # alias para compatibilidade com main.py antigo
