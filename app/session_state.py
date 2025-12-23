@@ -12,6 +12,13 @@ DEFAULT_STATE: Dict[str, Any] = {
     "cep": None,
     "endereco": None,
 
+    # remoção de itens
+    "awaiting_remove_choice": False,
+    "remove_options": None,
+    "awaiting_remove_qty": False,
+    "pending_remove_product_id": None,
+    "pending_remove_max_qty": None,
+
     # cliente
     "cliente_nome": None,
     "cliente_telefone": None,

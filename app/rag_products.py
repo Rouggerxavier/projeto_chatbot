@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import math
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
@@ -31,13 +32,61 @@ _embeddings: Optional[HuggingFaceEmbeddings] = None
 _vectorstore: Optional[Chroma] = None
 _index_built: bool = False
 _last_index_count: int = -1
+_embeddings_failed: bool = False
 
 
-def _get_embeddings() -> HuggingFaceEmbeddings:
-    global _embeddings
-    if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL_NAME)
-    return _embeddings
+def _get_embeddings() -> Optional[HuggingFaceEmbeddings]:
+    global _embeddings, _embeddings_failed
+    
+    if _embeddings_failed:
+        return None
+    
+    if _embeddings is not None:
+        return _embeddings
+    
+    offline_mode = os.getenv("HF_OFFLINE", "0") == "1"
+    
+    if offline_mode:
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    
+    max_retries = 2 if not offline_mode else 1
+    for attempt in range(max_retries):
+        try:
+            if not offline_mode and attempt == 0:
+                os.environ["TRANSFORMERS_OFFLINE"] = "0"
+                os.environ.pop("HF_HUB_OFFLINE", None)
+            else:
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                os.environ["HF_HUB_OFFLINE"] = "1"
+            
+            _embeddings = HuggingFaceEmbeddings(
+                model_name=EMBED_MODEL_NAME,
+                model_kwargs={"trust_remote_code": True},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+            print(f"✅ Modelo de embeddings carregado: {EMBED_MODEL_NAME} (offline={os.environ.get('TRANSFORMERS_OFFLINE', '0')})")
+            return _embeddings
+        except Exception as e:
+            attempt_num = attempt + 1
+            error_str = str(e)
+            
+            if "huggingface.co" in error_str.lower() or "timeout" in error_str.lower() or "connection" in error_str.lower():
+                print(f"⚠️ Problema de conexão com HuggingFace (tentativa {attempt_num}/{max_retries})")
+                if attempt < max_retries - 1:
+                    print("   Tentando novamente em modo offline...")
+                    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                    os.environ["HF_HUB_OFFLINE"] = "1"
+                    continue
+            else:
+                print(f"⚠️ Erro ao carregar embeddings: {error_str[:200]}")
+            
+            if attempt >= max_retries - 1:
+                print("❌ Falha ao carregar modelo de embeddings. Buscas semânticas desabilitadas.")
+                _embeddings_failed = True
+                return None
+    
+    return None
 
 
 def _produto_to_doc(p: Produto) -> Document:
@@ -85,6 +134,9 @@ def rebuild_products_index(force: bool = False) -> int:
             os.makedirs(CHROMA_DIR, exist_ok=True)
 
             embeddings = _get_embeddings()
+            if embeddings is None:
+                print("❌ Não foi possível reconstruir o índice: modelo de embeddings indisponível")
+                return 0
 
             # Sempre recria do zero (mais previsível)
             # Apaga a collection anterior removendo o diretório inteiro? (opcional)
@@ -105,34 +157,45 @@ def rebuild_products_index(force: bool = False) -> int:
             db.close()
 
 
-def _ensure_index_ready() -> None:
+def _ensure_index_ready() -> bool:
     global _vectorstore, _index_built
     with _lock:
         if _index_built and _vectorstore is not None:
-            return
+            return True
+        
+        if _embeddings_failed:
+            print("⚠️ Não é possível usar buscas semânticas (modelo de embeddings falhou).")
+            return False
 
         os.makedirs(CHROMA_DIR, exist_ok=True)
         embeddings = _get_embeddings()
+        
+        if embeddings is None:
+            return False
 
-        # Tenta abrir índice persistido (se existir)
-        _vectorstore = Chroma(
-            collection_name=CHROMA_COLLECTION,
-            embedding_function=embeddings,
-            persist_directory=CHROMA_DIR,
-        )
-
-        # Se não tiver nada ainda, cria a partir do banco
-        # (Chroma não expõe um "count" 100% padronizado em todas versões, então fazemos rebuild se vazio)
         try:
-            # Algumas versões: _collection.count()
-            count = _vectorstore._collection.count()  # type: ignore[attr-defined]
-        except Exception:
-            count = 0
+            # Tenta abrir índice persistido (se existir)
+            _vectorstore = Chroma(
+                collection_name=CHROMA_COLLECTION,
+                embedding_function=embeddings,
+                persist_directory=CHROMA_DIR,
+            )
 
-        if count == 0:
-            rebuild_products_index(force=True)
-        else:
-            _index_built = True
+            # Se não tiver nada ainda, cria a partir do banco
+            try:
+                count = _vectorstore._collection.count()  # type: ignore[attr-defined]
+            except Exception:
+                count = 0
+
+            if count == 0:
+                rebuild_products_index(force=True)
+            else:
+                _index_built = True
+            
+            return True
+        except Exception as e:
+            print(f"❌ Erro ao inicializar índice Chroma: {str(e)}")
+            return False
 
 
 def _distance_to_score(x: float) -> float:
@@ -162,7 +225,10 @@ def search_products(query: str, k: int = 6, min_score: float = 0.15) -> List[Dic
     if not query or not query.strip():
         return []
 
-    _ensure_index_ready()
+    if not _ensure_index_ready():
+        print(f"⚠️ Buscas semânticas indisponíveis. Retornando lista vazia para: {query}")
+        return []
+    
     if _vectorstore is None:
         return []
 

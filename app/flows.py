@@ -13,7 +13,13 @@ from app.text_utils import (
     norm,
 )
 from app.persistence import save_chat_db
-from app.cart_service import format_orcamento, reset_orcamento, add_item_to_orcamento
+from app.cart_service import (
+    format_orcamento,
+    reset_orcamento,
+    add_item_to_orcamento,
+    list_orcamento_items,
+    remove_item_from_orcamento,
+)
 from app.product_search import (
     db_find_best_products,
     format_options,
@@ -28,7 +34,7 @@ from app.parsing import (
     extract_product_hint,
 )
 from app.preferences import handle_preferences, message_is_preferences_only, maybe_register_address
-from app.checkout import handle_checkout, ready_to_checkout
+from app.checkout import handle_checkout, ready_to_checkout, handle_more_products_question
 from app.session_state import get_state, patch_state
 
 
@@ -92,6 +98,155 @@ def _looks_like_bad_unit_request(message: str, hint: str) -> Optional[str]:
     return None
 
 
+def _is_remove_intent(message: str) -> bool:
+    t = norm(message)
+    return any(k in t for k in ["remover", "tirar", "excluir", "deletar", "retirar"]) or "tirar do" in t
+
+
+def _build_remove_options_text(options: List[Dict[str, Any]]) -> str:
+    lines = []
+    for idx, opt in enumerate(options, start=1):
+        lines.append(
+            f"{idx}) {opt['nome']} — {opt['quantidade']:.0f} {opt['unidade']} (R$ {opt['subtotal']:.2f})"
+        )
+    return "\n".join(lines)
+
+
+def start_remove_flow(session_id: str) -> str:
+    items = list_orcamento_items(session_id)
+    if not items:
+        return "Seu orçamento está vazio. Não há itens para remover."
+
+    patch_state(
+        session_id,
+        {
+            "awaiting_remove_choice": True,
+            "remove_options": [
+                {
+                    "product_id": it["product_id"],
+                    "nome": it["nome"],
+                    "quantidade": it["quantidade"],
+                    "unidade": it["unidade"],
+                    "subtotal": it["subtotal"],
+                }
+                for it in items
+            ],
+        },
+    )
+
+    options_text = _build_remove_options_text(items)
+    return (
+        "Quer remover algum item do orçamento? Se quiser, responda o número correspondente. "
+        "Se não quiser remover nada, diga **não**.\n\n" + options_text
+    )
+
+
+def handle_remove_choice(session_id: str, message: str) -> Optional[str]:
+    st = get_state(session_id)
+    if not st.get("awaiting_remove_choice"):
+        return None
+
+    opts: List[Dict[str, Any]] = st.get("remove_options") or []
+    t = norm(message)
+
+    if t in {"nao", "não", "nenhum", "n"}:
+        patch_state(session_id, {"awaiting_remove_choice": False, "remove_options": None})
+        return "Certo, mantive todos os itens do orçamento."
+
+    if not opts:
+        patch_state(session_id, {"awaiting_remove_choice": False, "remove_options": None})
+        return "Não encontrei itens para remover agora."
+
+    choice = parse_choice_indices(message, max_n=len(opts))
+    if not choice:
+        options_text = _build_remove_options_text(opts)
+        return (
+            "Me diga o número do item que quer remover ou responda **não** para manter tudo.\n\n"
+            + options_text
+        )
+
+    idx0 = choice[0] - 1
+    if idx0 < 0 or idx0 >= len(opts):
+        options_text = _build_remove_options_text(opts)
+        return (
+            "Opção inválida. Escolha um número da lista ou responda **não** para manter tudo.\n\n"
+            + options_text
+        )
+
+    # Produto escolhido - agora perguntar quantidade
+    product_id = opts[idx0]["product_id"]
+    max_qty = opts[idx0]["quantidade"]
+    produto_nome = opts[idx0]["nome"]
+    
+    patch_state(session_id, {
+        "awaiting_remove_choice": False,
+        "remove_options": None,
+        "awaiting_remove_qty": True,
+        "pending_remove_product_id": product_id,
+        "pending_remove_max_qty": max_qty,
+    })
+    
+    return (
+        f"Você tem **{max_qty:.0f} unidade(s)** de **{produto_nome}** no orçamento.\n\n"
+        f"Quantas unidades você quer remover? (ou diga **tudo** para remover todas)"
+    )
+
+
+def handle_remove_qty(session_id: str, message: str) -> Optional[str]:
+    st = get_state(session_id)
+    if not st.get("awaiting_remove_qty"):
+        return None
+    
+    product_id = st.get("pending_remove_product_id")
+    max_qty = st.get("pending_remove_max_qty")
+    
+    if not product_id or max_qty is None:
+        patch_state(session_id, {
+            "awaiting_remove_qty": False,
+            "pending_remove_product_id": None,
+            "pending_remove_max_qty": None,
+        })
+        return "Não consegui identificar o item para remover. Tente novamente."
+    
+    t = norm(message)
+    
+    # Se disser "tudo", remove tudo
+    if t in {"tudo", "todos", "todas", "completo"}:
+        ok, msg = remove_item_from_orcamento(session_id, int(product_id), qty_to_remove=None)
+        patch_state(session_id, {
+            "awaiting_remove_qty": False,
+            "pending_remove_product_id": None,
+            "pending_remove_max_qty": None,
+        })
+        resumo = format_orcamento(session_id)
+        if ok:
+            return f"✅ {msg}\n\n{resumo}"
+        return f"⚠️ {msg}\n\n{resumo}"
+    
+    # Tenta extrair quantidade
+    from app.quantity_parser import extract_units_quantity, extract_plain_number
+    qty = extract_units_quantity(message) or extract_plain_number(message)
+    
+    if qty is None or qty <= 0:
+        return (
+            f"Não entendi a quantidade. Você tem **{max_qty:.0f} unidade(s)** no orçamento.\n\n"
+            f"Me diga quantas quer remover (ex.: 2, 5, etc.) ou diga **tudo** para remover todas."
+        )
+    
+    # Remove a quantidade
+    ok, msg = remove_item_from_orcamento(session_id, int(product_id), qty_to_remove=float(qty))
+    patch_state(session_id, {
+        "awaiting_remove_qty": False,
+        "pending_remove_product_id": None,
+        "pending_remove_max_qty": None,
+    })
+    
+    resumo = format_orcamento(session_id)
+    if ok:
+        return f"✅ {msg}\n\n{resumo}"
+    return f"⚠️ {msg}\n\n{resumo}"
+
+
 def reply_after_preference(session_id: str) -> str:
     st = get_state(session_id)
     resumo = format_orcamento(session_id)
@@ -114,7 +269,7 @@ def reply_after_preference(session_id: str) -> str:
     if not st.get("preferencia_entrega"):
         reply += "\n\nVai ser **entrega** ou **retirada**?"
     elif st.get("preferencia_entrega") == "entrega" and not (st.get("bairro") or st.get("cep") or st.get("endereco")):
-        reply += "\n\nMe diga o **bairro** ou mande o **CEP/endereço** para entrega."
+        reply += "\n\nMe diga o **bairro** ou mande o **endereço completo (rua e número)** para entrega."
 
     if not st.get("forma_pagamento"):
         reply += "\n\nVai pagar no **PIX**, **cartão** ou **dinheiro**?"
@@ -241,7 +396,9 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
     resumo = format_orcamento(session_id)
     if not ok:
         return f"{msg_add}\n\n{resumo}"
-    return f"✅ {msg_add}\n\n{resumo}"
+    
+    patch_state(session_id, {"asking_for_more": True})
+    return f"✅ {msg_add}\n\n{resumo}\n\n**Quer adicionar outro produto?** (sim/não)"
 
 
 def auto_suggest_products(message: str, session_id: str) -> Optional[str]:
@@ -373,6 +530,35 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
         # preferências/endereço
         maybe_register_address(message, session_id)
         handle_preferences(message, session_id)
+
+        # remoção - quantidade pendente
+        pending_remove_qty = handle_remove_qty(session_id, message)
+        if pending_remove_qty:
+            pending_remove_qty = sanitize_reply(pending_remove_qty)
+            save_chat_db(session_id, message, pending_remove_qty, needs_human)
+            return pending_remove_qty, needs_human
+
+        # remoção - escolha pendente
+        pending_remove = handle_remove_choice(session_id, message)
+        if pending_remove:
+            pending_remove = sanitize_reply(pending_remove)
+            save_chat_db(session_id, message, pending_remove, needs_human)
+            return pending_remove, needs_human
+
+        # intenção de remover itens
+        if _is_remove_intent(message):
+            remove_reply = start_remove_flow(session_id)
+            remove_reply = sanitize_reply(remove_reply)
+            save_chat_db(session_id, message, remove_reply, needs_human)
+            return remove_reply, needs_human
+
+        # resposta para "Quer outro produto?"
+        more_reply, more_needs = handle_more_products_question(message, session_id)
+        if more_reply:
+            needs_human = more_needs
+            more_reply = sanitize_reply(more_reply)
+            save_chat_db(session_id, message, more_reply, needs_human)
+            return more_reply, needs_human
 
         # checkout (apenas quando usuário disser finalizar/fechar)
         checkout_reply, checkout_needs = handle_checkout(message, session_id)

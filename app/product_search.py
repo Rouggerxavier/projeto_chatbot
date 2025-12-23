@@ -1,4 +1,5 @@
 import re
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -168,10 +169,24 @@ def db_find_best_products(query: str, k: int = 6) -> List[Dict[str, Any]]:
     # 2) fallback SQL ILIKE
     produtos = _sql_fallback_find_products(q, k=k)
     out2: List[Dict[str, Any]] = []
+    seen_ids = set()
     for p in produtos:
-        norm = _normalize_candidate(p, default_score=0.40)
-        if norm:
-            out2.append(norm)
+        normed = _normalize_candidate(p, default_score=0.40)
+        if normed and normed["id"] not in seen_ids:
+            seen_ids.add(normed["id"])
+            out2.append(normed)
+
+    if not out2:
+        tokens = [t for t in re.split(r"\s+", q) if len(t) >= 2]
+        for tok in tokens:
+            extras = _sql_fallback_find_products(tok, k=k)
+            for p in extras:
+                normed = _normalize_candidate(p, default_score=0.40)
+                if normed and normed["id"] not in seen_ids:
+                    seen_ids.add(normed["id"])
+                    out2.append(normed)
+            if len(out2) >= k:
+                break
 
     return out2[:k]
 

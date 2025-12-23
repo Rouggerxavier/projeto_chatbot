@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 
 from sqlalchemy.orm import Session
 
@@ -127,5 +127,92 @@ def reset_orcamento(session_id: str) -> str:
     except Exception:
         db.rollback()
         return "Tive um problema ao limpar seu orçamento."
+    finally:
+        db.close()
+
+
+def list_orcamento_items(session_id: str) -> List[Dict[str, Any]]:
+    db: Session = SessionLocal()
+    try:
+        orc = (
+            db.query(Orcamento)
+            .filter(Orcamento.user_id == session_id, Orcamento.status == "aberto")
+            .first()
+        )
+        if not orc:
+            return []
+        itens = (
+            db.query(ItemOrcamento)
+            .filter(ItemOrcamento.id_orcamento == orc.id)
+            .all()
+        )
+        result = []
+        for it in itens:
+            prod = it.produto
+            if not prod:
+                continue
+            result.append(
+                {
+                    "item_id": it.id,
+                    "product_id": prod.id,
+                    "nome": prod.nome,
+                    "quantidade": float(it.quantidade),
+                    "unidade": prod.unidade or "UN",
+                    "subtotal": float(it.subtotal),
+                }
+            )
+        return result
+    finally:
+        db.close()
+
+
+def remove_item_from_orcamento(session_id: str, product_id: int, qty_to_remove: Optional[float] = None) -> Tuple[bool, str]:
+    """
+    Remove item do orçamento.
+    Se qty_to_remove for None ou >= quantidade atual, remove tudo.
+    Senão, diminui a quantidade.
+    """
+    db: Session = SessionLocal()
+    try:
+        orc = (
+            db.query(Orcamento)
+            .filter(Orcamento.user_id == session_id, Orcamento.status == "aberto")
+            .first()
+        )
+        if not orc:
+            return False, "Não encontrei um orçamento aberto para remover itens."
+
+        item = (
+            db.query(ItemOrcamento)
+            .filter(ItemOrcamento.id_orcamento == orc.id, ItemOrcamento.id_produto == product_id)
+            .first()
+        )
+        if not item:
+            db.rollback()
+            return False, "Não encontrei esse item no seu orçamento."
+
+        current_qty = float(item.quantidade)
+        
+        # Remove tudo se qty_to_remove for None ou >= quantidade atual
+        if qty_to_remove is None or qty_to_remove >= current_qty:
+            db.delete(item)
+            msg = f"Removido {current_qty:.0f} unidade(s) do orçamento (item removido completamente)."
+        else:
+            # Remove parcialmente
+            new_qty = current_qty - qty_to_remove
+            item.quantidade = new_qty
+            item.subtotal = round(new_qty * float(item.valor_unitario), 2)
+            msg = f"Removido {qty_to_remove:.0f} unidade(s). Restam {new_qty:.0f} no orçamento."
+
+        # Recalcula total
+        itens = db.query(ItemOrcamento).filter(ItemOrcamento.id_orcamento == orc.id).all()
+        total = round(sum(float(it.subtotal) for it in itens), 2)
+        orc.total_aproximado = total
+
+        db.commit()
+        return True, msg
+    except Exception:
+        db.rollback()
+        return False, "Tive um problema ao remover este item."
     finally:
         db.close()
