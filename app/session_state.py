@@ -4,7 +4,13 @@ from sqlalchemy.orm import Session
 from database import SessionLocal, ChatSessionState
 
 
+# Estado padrão com email
 DEFAULT_STATE: Dict[str, Any] = {
+    # cliente
+    "cliente_nome": None,
+    "cliente_telefone": None,
+    "cliente_email": None,  # ✅ EMAIL OBRIGATÓRIO
+
     # checkout
     "preferencia_entrega": None,   # "entrega" ou "retirada"
     "forma_pagamento": None,       # "pix" / "cartão" / "dinheiro"
@@ -12,23 +18,13 @@ DEFAULT_STATE: Dict[str, Any] = {
     "cep": None,
     "endereco": None,
 
-    # remoção de itens
-    "awaiting_remove_choice": False,
-    "remove_options": None,
-    "awaiting_remove_qty": False,
-    "pending_remove_product_id": None,
-    "pending_remove_max_qty": None,
-
-    # cliente
-    "cliente_nome": None,
-    "cliente_telefone": None,
-
     # controle do fluxo
     "checkout_mode": False,
 
     # último pedido finalizado
     "last_order_id": None,
     "last_order_summary": None,
+    "last_order_total": None,
 }
 
 

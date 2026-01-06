@@ -38,8 +38,10 @@ def ready_to_checkout(session_id: str) -> bool:
         if not st.get("endereco"):
             return False
 
-    # exige nome e telefone
+    # exige nome, email e telefone
     if not st.get("cliente_nome"):
+        return False
+    if not st.get("cliente_email"):
         return False
     if not st.get("cliente_telefone"):
         return False

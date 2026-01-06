@@ -3,7 +3,7 @@ from typing import Optional
 from app.session_state import get_state, patch_state
 from app.cart_service import add_item_to_orcamento, format_orcamento
 from app.product_search import db_get_product_by_id
-from app.quantity_parser import (
+from app.parsing import (
     extract_kg_quantity,
     extract_units_quantity,
     extract_plain_number,
@@ -21,7 +21,7 @@ def set_pending_for_qty(session_id: str, produto, requested_kg: Optional[float])
         },
     )
 
-    ask = "\n\nQuantas unidades você quer? (ex.: 1, 4 sacos ou 200kg)"
+    ask = "\n\nQuantas unidades voce quer? (ex.: 1, 4 sacos ou 200kg)"
 
     if requested_kg is not None:
         conv = suggest_units_from_packaging(produto.nome, requested_kg)
@@ -29,9 +29,9 @@ def set_pending_for_qty(session_id: str, produto, requested_kg: Optional[float])
             suggested_units, conv_text = conv
             patch_state(session_id, {"pending_suggested_units": suggested_units})
             ask = (
-                "\n\nPelo que você pediu: "
+                "\n\nPelo que voce pediu: "
                 f"**{conv_text}**.\n"
-                f"Quer que eu adicione **{int(suggested_units)}** no orçamento? "
+                f"Quer que eu adicione **{int(suggested_units)}** no orcamento? "
                 "(responda sim ou diga outra quantidade)"
             )
 
@@ -40,8 +40,8 @@ def set_pending_for_qty(session_id: str, produto, requested_kg: Optional[float])
     un = produto.unidade or "UN"
 
     return (
-        f"Beleza — **{produto.nome}**.\n"
-        f"Preço: R$ {preco:.2f}/{un} | Estoque: {estoque:.0f} {un}."
+        f"Beleza - **{produto.nome}**.\n"
+        f"Preco: R$ {preco:.2f}/{un} | Estoque: {estoque:.0f} {un}."
         + ask
     )
 
@@ -61,9 +61,11 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
                 "pending_suggested_units": None,
             },
         )
-        return "Certo — não consegui localizar esse produto agora. Me diga novamente qual produto você quer."
+        return "Certo - nao consegui localizar esse produto agora. Me diga novamente qual produto voce quer."
 
     t = (message or "").strip().lower()
+    qty_un: Optional[float] = None
+
     if t in {"sim", "isso", "ok", "certo"} and st.get("pending_suggested_units") is not None:
         qty_un = float(st["pending_suggested_units"])
     else:
@@ -71,16 +73,14 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
         unit_qty = extract_units_quantity(message)
         plain = extract_plain_number(message)
 
-        qty_un: Optional[float] = None
-
         if kg_qty is not None:
             conv = suggest_units_from_packaging(produto.nome, kg_qty)
             if conv:
                 qty_un, _ = conv
             else:
                 return (
-                    "Entendi os kg, mas este item não indica o peso por saco/unidade. "
-                    "Me diga quantas unidades você quer (ex.: 4)."
+                    "Entendi os kg, mas este item nao indica o peso por saco/unidade. "
+                    "Me diga quantas unidades voce quer (ex.: 4)."
                 )
 
         if unit_qty is not None:
@@ -93,14 +93,14 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
             suggested = st.get("pending_suggested_units")
             if suggested is not None:
                 return (
-                    f"Quer que eu adicione **{int(suggested)}** unidades no orçamento? "
+                    f"Quer que eu adicione **{int(suggested)}** unidades no orcamento? "
                     "(responda sim ou diga outra quantidade)"
                 )
-            else:
-                return "Entendi. Quantas unidades você quer? (ex.: 1, 4 sacos ou 200kg)"
+            return "Entendi. Quantas unidades voce quer? (ex.: 1, 4 sacos ou 200kg)"
 
-        if qty_un <= 0:
-            return "Entendi. Quantas unidades você quer?"
+    # Verificacao geral apos todo o processamento
+    if qty_un is None or qty_un <= 0:
+        return "Entendi. Quantas unidades voce quer?"
 
     patch_state(
         session_id,
@@ -116,6 +116,6 @@ def handle_pending_qty(session_id: str, message: str) -> Optional[str]:
 
     if ok:
         patch_state(session_id, {"asking_for_more": True})
-        return f"{msg}\n\n{resumo}\n\nQuer adicionar outro produto? (sim ou não)"
+        return f"{msg}\n\n{resumo}\n\nQuer adicionar outro produto? (sim ou nao)"
     else:
-        return f"⚠️ {msg}\n\n{resumo}"
+        return f"{msg}\n\n{resumo}"

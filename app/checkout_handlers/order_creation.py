@@ -49,7 +49,7 @@ def create_pedido_from_orcamento(session_id: str) -> Tuple[Optional[int], Option
 
         cliente = db.query(Cliente).filter(Cliente.telefone == telefone).first()
         if not cliente:
-            cliente = Cliente(nome=nome, telefone=telefone)
+            cliente = Cliente(nome=nome, telefone=telefone, email="")
             db.add(cliente)
             db.flush()
 

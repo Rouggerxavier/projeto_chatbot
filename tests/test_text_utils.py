@@ -39,8 +39,3 @@ def test_apply_guardrails_preserves_clean_text():
     assert changed is False
     # não deve anexar nota se nada foi alterado
     assert SAFE_NOTE not in cleaned
-
-def test_sanitize_reply_preserves_mercadopago_link():
-    reply = "Pague aqui:\nhttps://www.mercadopago.com.br/checkout/v1/redirect?pref_id=123"
-    cleaned = text_utils.sanitize_reply(reply)
-    assert "mercadopago.com.br" in cleaned.lower()

@@ -1,5 +1,4 @@
 import re
-import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -234,23 +233,6 @@ def parse_choice_indices(text: str, max_n: int = None, max_len: int = None) -> L
             out.append(i)
 
     # remove duplicados preservando ordem
-    seen = set()
-    clean: List[int] = []
-    for i in out:
-        if i not in seen:
-            seen.add(i)
-            clean.append(i)
-    return clean
-
-    if not text:
-        return []
-    nums = re.findall(r"\d+", text)
-    out: List[int] = []
-    for n in nums:
-        i = int(n)
-        if 1 <= i <= max_len:
-            out.append(i - 1)
-
     seen = set()
     clean: List[int] = []
     for i in out:

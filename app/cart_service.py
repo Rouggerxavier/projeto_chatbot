@@ -118,12 +118,12 @@ def reset_orcamento(session_id: str) -> str:
             .first()
         )
         if not orc:
-            return "Seu orçamento já estava vazio. Podemos começar um novo agora. 🙂"
+            return "Seu orcamento ja estava vazio. Podemos comecar um novo agora."
 
         db.query(ItemOrcamento).filter(ItemOrcamento.id_orcamento == orc.id).delete()
         orc.total_aproximado = 0
         db.commit()
-        return "Zerei o seu orçamento atual. Podemos começar tudo do zero. 🙂"
+        return "Zerei o seu orcamento atual. Podemos comecar tudo do zero."
     except Exception:
         db.rollback()
         return "Tive um problema ao limpar seu orçamento."

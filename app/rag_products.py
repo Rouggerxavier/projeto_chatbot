@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import threading
 import math
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
-from langchain_community.embeddings import HuggingFaceEmbeddings
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except ImportError:
+    from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 
 from database import SessionLocal, Produto
@@ -268,41 +270,6 @@ def search_products(query: str, k: int = 6, min_score: float = 0.15) -> List[Dic
             }
         )
 
-    results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-    return results
-
-    _ensure_index_ready()
-    if _vectorstore is None:
-        return []
-
-    q = query.strip()
-
-    results: List[Dict[str, Any]] = []
-    try:
-        # Retorna (Document, score) onde score costuma ser similaridade (depende do backend)
-        docs_scores: List[Tuple[Document, float]] = _vectorstore.similarity_search_with_relevance_scores(q, k=k)
-    except Exception:
-        # fallback caso a versão não suporte relevance_scores
-        docs = _vectorstore.similarity_search(q, k=k)
-        docs_scores = [(d, 1.0) for d in docs]
-
-    for doc, score in docs_scores:
-        md = doc.metadata or {}
-        if float(score) < float(min_score):
-            continue
-
-        results.append(
-            {
-                "id_produto": md.get("id_produto"),
-                "nome": md.get("nome"),
-                "unidade": md.get("unidade"),
-                "preco": md.get("preco"),
-                "estoque": md.get("estoque"),
-                "score": float(score),
-            }
-        )
-
-    # Ordena maior score primeiro
     results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     return results
 

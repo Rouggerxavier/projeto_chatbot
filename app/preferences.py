@@ -83,19 +83,20 @@ def message_is_preferences_only(message: str, session_id: str) -> bool:
     """
     st = get_state(session_id)
 
-    # ✅ se estamos esperando quantidade, "sim" não pode ser interceptado aqui
+    # se estamos esperando quantidade, "sim" não pode ser interceptado aqui
     if st.get("awaiting_qty"):
         return False
 
     t = norm(message).strip()
+    raw = (message or "").strip()
 
     # ack simples
     if t in {"ok", "certo", "beleza", "pronto", "isso"}:
         return True
 
     # CEP puro
-    raw = (message or "").strip().replace(" ", "")
-    if CEP_REGEX.fullmatch(raw) is not None:
+    raw_no_space = raw.replace(" ", "")
+    if CEP_REGEX.fullmatch(raw_no_space) is not None:
         return True
 
     # "bairro bessa"
@@ -108,6 +109,14 @@ def message_is_preferences_only(message: str, session_id: str) -> bool:
 
     # palavras de preferência
     if any(k in t for k in ["entrega", "retirada", "retirar", "buscar na loja", "pix", "cartao", "cartão", "dinheiro"]):
+        return True
+
+    # endereco (rua, avenida, etc) - verifica se maybe_register_address conseguiu capturar
+    if any(k in t for k in ["rua ", "av ", "avenida", "travessa", "alameda"]):
+        return True
+
+    # numero de endereco (ex: "rua tal, 15" ou "numero 123")
+    if any(k in t for k in ["nº", "numero", "número"]) or re.search(r",\s*\d+", raw):
         return True
 
     return False

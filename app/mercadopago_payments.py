@@ -1,10 +1,29 @@
 import os
 import uuid
+import re
 from typing import Any, Dict, Optional
 
 import requests
 
 MP_API_BASE = "https://api.mercadopago.com"
+MP_REQUEST_TIMEOUT = int(os.environ.get("REQUESTS_TIMEOUT", "60"))
+
+
+def _validate_email(email: Optional[str]) -> str:
+    """Valida e retorna email, ou lança exceção se inválido."""
+    if not email:
+        raise ValueError("Email é obrigatório para pagamento PIX")
+    
+    email = email.strip()
+    # Regex simples para validar email
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+        raise ValueError(f"Email inválido: {email}")
+    
+    # Rejeita emails de teste/exemplo
+    if email.endswith(("@example.com", "@test.com", "@localhost")):
+        raise ValueError(f"Email de teste não permitido: {email}")
+    
+    return email
 
 
 def _get_env(name: str) -> str:
@@ -89,7 +108,11 @@ def create_checkout_preference(
         payload["back_urls"] = resolved_back_urls
 
     if resolved_payer_email:
-        payload["payer"] = {"email": resolved_payer_email}
+        try:
+            validated_email = _validate_email(resolved_payer_email)
+            payload["payer"] = {"email": validated_email}
+        except ValueError as e:
+            print(f"⚠️ Email inválido no preference: {e}")
 
     print(f"📤 Enviando payload para MP Preference: {payload}")
     
@@ -97,10 +120,10 @@ def create_checkout_preference(
         f"{MP_API_BASE}/checkout/preferences",
         headers=_auth_headers(),
         json=payload,
-        timeout=30,
+        timeout=MP_REQUEST_TIMEOUT,
     )
     
-    if r.status_code != 200 and r.status_code != 201:
+    if r.status_code not in (200, 201):
         print(f"❌ Resposta MP (status={r.status_code}): {r.text[:1000]}")
     
     r.raise_for_status()
@@ -129,17 +152,28 @@ def create_pix_payment(
     payer_identification: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """
+    Cria um pagamento PIX com validação rigorosa.
+    Requer email REAL do cliente.
+    """
     if total is None or float(total) <= 0:
         raise ValueError("total inválido para criar pagamento PIX")
 
     resolved_notification = notification_url or _get_env_optional("MP_NOTIFICATION_URL")
-    resolved_email = payer_email or _get_env_optional("MP_DEFAULT_PAYER_EMAIL") or f"cliente+{pedido_id}@example.com"
+    
+    # Valida email - OBRIGATÓRIO e REAL
+    resolved_email = payer_email or _get_env_optional("MP_DEFAULT_PAYER_EMAIL")
+    try:
+        resolved_email = _validate_email(resolved_email)
+    except ValueError as e:
+        print(f"❌ Erro crítico: {e}")
+        raise
 
     payer: Dict[str, Any] = {"email": resolved_email}
     if payer_first_name:
-        payer["first_name"] = payer_first_name
+        payer["first_name"] = payer_first_name[:45]  # Limite MP
     if payer_last_name:
-        payer["last_name"] = payer_last_name
+        payer["last_name"] = payer_last_name[:45]   # Limite MP
     if payer_identification:
         payer["identification"] = payer_identification
 
@@ -148,29 +182,41 @@ def create_pix_payment(
         "description": description or f"Pedido #{pedido_id} (PIX)",
         "payment_method_id": "pix",
         "external_reference": f"pedido:{pedido_id}",
-        "metadata": metadata or {"pedido_id": pedido_id},
         "payer": payer,
+        "metadata": metadata or {"pedido_id": pedido_id},
     }
 
     if resolved_notification:
         payload["notification_url"] = resolved_notification
 
-    print(f"📤 Enviando payload para MP: {payload}")
+    print(f"📤 Enviando pagamento PIX para pedido #{pedido_id}")
+    print(f"   Total: R$ {total}")
+    print(f"   Email: {resolved_email}")
     
     headers = _auth_headers()
     headers["X-Idempotency-Key"] = str(uuid.uuid4())
     
-    r = requests.post(
-        f"{MP_API_BASE}/v1/payments",
-        headers=headers,
-        json=payload,
-        timeout=30,
-    )
-    
-    if r.status_code != 200 and r.status_code != 201:
-        print(f"❌ Resposta MP (status={r.status_code}): {r.text[:500]}")
-    
-    r.raise_for_status()
+    try:
+        r = requests.post(
+            f"{MP_API_BASE}/v1/payments",
+            headers=headers,
+            json=payload,
+            timeout=MP_REQUEST_TIMEOUT,
+        )
+        
+        if r.status_code not in (200, 201):
+            error_msg = r.text[:500]
+            print(f"❌ Resposta MP (status={r.status_code}): {error_msg}")
+            print(f"   Payload enviado: {payload}")
+        
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"❌ Erro HTTP ao gerar pagamento PIX: {e}")
+        raise
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Erro de conexão com MP: {e}")
+        raise
+
     data = r.json()
 
     transaction_data = data.get("point_of_interaction", {}).get("transaction_data", {})

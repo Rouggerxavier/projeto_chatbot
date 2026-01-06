@@ -109,3 +109,13 @@ def split_first_last(full_name: Optional[str]) -> Tuple[Optional[str], Optional[
     first = parts[0]
     last = parts[-1] if len(parts) > 1 else None
     return first, last
+
+
+def extract_email(message: str) -> Optional[str]:
+    """Extrai email valido da mensagem e normaliza para lowercase."""
+    t = message or ""
+    email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+    match = re.search(email_pattern, t)
+    if match:
+        return match.group(0).lower().strip()
+    return None

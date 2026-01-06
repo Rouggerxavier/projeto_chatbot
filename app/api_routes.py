@@ -3,7 +3,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from typing import Optional
 from uuid import uuid4
 
-from app.flows import handle_message
+from app.flow_controller import handle_message
 
 router = APIRouter()
 

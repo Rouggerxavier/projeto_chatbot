@@ -1,7 +1,6 @@
 import re
 from typing import Tuple
 
-# Nota segura (usada no text_utils)
 SAFE_NOTE = (
     "Obs.: eu **não envio e-mail** nem **gera rastreio** aqui no chat. "
     "Eu apenas monto o orçamento/pedido e encaminho para um atendente finalizar."
@@ -9,24 +8,27 @@ SAFE_NOTE = (
 
 # Coisas que o bot NÃO pode afirmar (porque viram alucinação fácil)
 _FORBIDDEN_ANY_PATTERNS = [
-    r"\be-?mail\b",
     r"\brastreamento\b",
     r"\brastreio\b",
     r"\bc[oó]digo\s+de\s+rastre(ia|io)\b",
     r"\btracking\b",
     r"\bc[oó]digo\s+de\s+barras\b",
     r"\bser[aá]\s+debitad[oa]\b",
-    r"\b(enviado|enviada|postado|postada|entregue|a\s+caminho|saiu\s+para\s+entrega)\b",
+    r"\b(postado|postada|a\s+caminho|saiu\s+para\s+entrega)\b",
 ]
 
 # Linhas que frequentemente aparecem como "invenção"
 _FORBIDDEN_LINE_PATTERNS = [
     r"voc[eê]\s+receber[aá]\s+um?\s+e-?mail",
     r"enviaremos\s+um?\s+e-?mail",
+    r"enviando\s+.*\s*e-?mail",
+    r"mandaremos\s+.*\s*e-?mail",
     r"c[oó]digo\s+de\s+rastre",
     r"c[oó]digo\s+de\s+barras",
     r"pedido\s+foi\s+enviado",
     r"pedido\s+foi\s+entregue",
+    r"pedido\s+enviado",
+    r"produto\s+enviado",
 ]
 
 FORBIDDEN_ANY = re.compile("|".join(_FORBIDDEN_ANY_PATTERNS), flags=re.IGNORECASE)

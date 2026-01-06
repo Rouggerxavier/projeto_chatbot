@@ -67,6 +67,7 @@ class Cliente(Base):
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String(150), nullable=False)
     telefone = Column(String(20))
+    email = Column(String(150), nullable=True)
     bairro = Column(String(80))
     endereco = Column(Text)
 

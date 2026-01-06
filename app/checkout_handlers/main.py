@@ -9,6 +9,7 @@ from .extractors import (
     extract_delivery_preference,
     extract_payment_method,
     extract_name,
+    extract_email,
 )
 from .validators import is_finalize_intent, ready_to_checkout
 from .order_creation import create_pedido_from_orcamento
@@ -31,8 +32,11 @@ def handle_more_products_question(message: str, session_id: str) -> Tuple[Option
         return "Ótimo! Qual produto você quer adicionar?", False
     
     if t in {"não", "nao", "n", "no", "nope"}:
-        # Sempre limpa forma_pagamento ao iniciar checkout para perguntar novamente
-        patch_state(session_id, {"asking_for_more": False, "forma_pagamento": None})
+        patch_state(session_id, {
+            "asking_for_more": False,
+            "forma_pagamento": None,
+            "cliente_email": None,
+        })
         
         orc = get_open_orcamento(session_id)
         if not orc:
@@ -77,8 +81,11 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     st = get_state(session_id)
 
     if is_finalize_intent(message):
-        # Sempre limpa forma_pagamento ao iniciar checkout para perguntar novamente
-        patch_state(session_id, {"checkout_mode": True, "forma_pagamento": None})
+        patch_state(session_id, {
+            "checkout_mode": True,
+            "forma_pagamento": None,
+            "cliente_email": None,
+        })
 
     st = get_state(session_id)
     if not st.get("checkout_mode"):
@@ -106,14 +113,21 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
             patch_state(session_id, {"forma_pagamento": pagamento})
             st = get_state(session_id)
 
-    # 4) Coleta nome
+    # 4) Coleta email
+    if not st.get("cliente_email"):
+        email = extract_email(message)
+        if email:
+            patch_state(session_id, {"cliente_email": email})
+            st = get_state(session_id)
+
+    # 5) Coleta nome
     if not st.get("cliente_nome"):
         nm = extract_name(message)
         if nm:
             patch_state(session_id, {"cliente_nome": nm})
             st = get_state(session_id)
 
-    # 5) Coleta telefone
+    # 6) Coleta telefone
     if not st.get("cliente_telefone"):
         ph = extract_phone(message)
         if ph:
@@ -135,7 +149,7 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
 
     if faltas:
         return (
-            "Para finalizar, preciso de:\n"
+            "Para finalizar o pedido, preciso dos seguintes dados:\n"
             + "\n".join(faltas)
             + "\n\n"
             + "Resumo:\n"
@@ -158,7 +172,7 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     total = float(st.get("last_order_total") or 0.0)
     cliente_email = st.get("cliente_email")
     cliente_nome = st.get("cliente_nome")
-    
+
     payment_block = generate_payment_block(
         pedido_id=pedido_id,
         forma=forma,
@@ -168,11 +182,11 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     )
 
     reply = (
-        f"✅ Pedido **#{pedido_id}** registrado e encaminhado para um atendente finalizar.\n\n"
+        f"Pedido **#{pedido_id}** registrado e encaminhado para um atendente finalizar.\n\n"
         f"Resumo do pedido:\n{resumo}"
         f"{payment_block}\n\n"
-        "Um atendente humano vai revisar e finalizar seu pedido agora. 🙋‍♂️\n\n"
-        "Obs.: esse orçamento foi **fechado** (por isso um novo orçamento pode ficar vazio). "
-        "Se quiser fazer um novo pedido, é só me dizer os itens."
+        "Um atendente humano vai revisar e finalizar seu pedido agora.\n\n"
+        "Obs.: esse orcamento foi **fechado** (por isso um novo orcamento pode ficar vazio). "
+        "Se quiser fazer um novo pedido, e so me dizer os itens."
     )
     return reply, True
