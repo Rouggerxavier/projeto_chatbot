@@ -100,6 +100,11 @@ def create_pedido_from_orcamento(session_id: str) -> Tuple[Optional[int], Option
             "last_order_summary": resumo,
             "last_order_total": total,
             "checkout_mode": False,
+            "forma_pagamento": None,
+            "preferencia_entrega": None,
+            "endereco": None,
+            "bairro": None,
+            "cep": None,
         })
 
         return pedido.id, None

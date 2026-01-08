@@ -34,8 +34,6 @@ def handle_more_products_question(message: str, session_id: str) -> Tuple[Option
     if t in {"não", "nao", "n", "no", "nope"}:
         patch_state(session_id, {
             "asking_for_more": False,
-            "forma_pagamento": None,
-            "cliente_email": None,
         })
         
         orc = get_open_orcamento(session_id)
@@ -51,6 +49,8 @@ def handle_more_products_question(message: str, session_id: str) -> Tuple[Option
             faltas.append("• A forma de pagamento é **pix**, **cartão** ou **dinheiro**?")
         if st.get("preferencia_entrega") == "entrega" and not st.get("endereco"):
             faltas.append("• Me passe o **endereço completo** (rua e número; bairro se souber).")
+        if not st.get("cliente_email"):
+            faltas.append("• Qual seu **e-mail**?")
         if not st.get("cliente_nome"):
             faltas.append("• Qual seu **nome**?")
         if not st.get("cliente_telefone"):
@@ -81,11 +81,7 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     st = get_state(session_id)
 
     if is_finalize_intent(message):
-        patch_state(session_id, {
-            "checkout_mode": True,
-            "forma_pagamento": None,
-            "cliente_email": None,
-        })
+        patch_state(session_id, {"checkout_mode": True})
 
     st = get_state(session_id)
     if not st.get("checkout_mode"):
@@ -142,6 +138,8 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
         faltas.append("• A forma de pagamento é **pix**, **cartão** ou **dinheiro**?")
     if st.get("preferencia_entrega") == "entrega" and not st.get("endereco"):
         faltas.append("• Me passe o **endereço completo** (rua e número; bairro se souber).")
+    if not st.get("cliente_email"):
+        faltas.append("• Qual seu **e-mail**?")
     if not st.get("cliente_nome"):
         faltas.append("• Qual seu **nome**?")
     if not st.get("cliente_telefone"):
@@ -157,6 +155,11 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
             True,
         )
 
+    # Captura forma_pagamento ANTES de criar pedido (order_creation limpa estado)
+    forma_pagamento_backup = st.get("forma_pagamento")
+    cliente_email_backup = st.get("cliente_email")
+    cliente_nome_backup = st.get("cliente_nome")
+
     # Todos os dados coletados - cria pedido
     pedido_id, err = create_pedido_from_orcamento(session_id)
     if err:
@@ -167,11 +170,17 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     st = get_state(session_id)
     resumo = st.get("last_order_summary") or "(não consegui montar o resumo agora, mas o pedido foi registrado)"
 
-    # Gera bloco de pagamento
-    forma = (st.get("forma_pagamento") or "").strip().lower()
+    # Gera bloco de pagamento (usa valores capturados ANTES do clear)
+    forma = (forma_pagamento_backup or "").strip().lower()
     total = float(st.get("last_order_total") or 0.0)
-    cliente_email = st.get("cliente_email")
-    cliente_nome = st.get("cliente_nome")
+    cliente_email = cliente_email_backup
+    cliente_nome = cliente_nome_backup
+
+    if not forma:
+        print(f"❌ ERRO CRÍTICO: forma_pagamento vazia ao gerar pagamento. pedido={pedido_id}")
+        raise RuntimeError(f"forma_pagamento vazia para pedido {pedido_id}")
+
+    print(f"🔍 DEBUG payment generation: pedido={pedido_id}, forma='{forma}', total={total}, email='{cliente_email}'")
 
     payment_block = generate_payment_block(
         pedido_id=pedido_id,
@@ -180,6 +189,8 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
         cliente_email=cliente_email,
         cliente_nome=cliente_nome,
     )
+
+    print(f"🔍 DEBUG payment_block result (length={len(payment_block)}): {payment_block[:200] if payment_block else '(empty)'}")
 
     reply = (
         f"Pedido **#{pedido_id}** registrado e encaminhado para um atendente finalizar.\n\n"

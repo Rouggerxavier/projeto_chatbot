@@ -22,12 +22,12 @@ def extract_delivery_preference(message: str) -> Optional[str]:
 
 
 def extract_payment_method(message: str) -> Optional[str]:
-    """Extrai 'pix', 'cartão' ou 'dinheiro' da mensagem."""
+    """Extrai 'pix', 'cartao' ou 'dinheiro' da mensagem."""
     t = norm(message or "")
     if "pix" in t:
         return "pix"
-    if "cartao" in t or "cartão" in t:
-        return "cartão"
+    if "cartao" in t:
+        return "cartao"
     if "dinhe" in t:
         return "dinheiro"
     return None

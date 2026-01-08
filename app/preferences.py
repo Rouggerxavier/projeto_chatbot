@@ -60,8 +60,8 @@ def handle_preferences(message: str, session_id: str) -> bool:
     # pagamento
     if "pix" in t and st.get("forma_pagamento") != "pix":
         patch["forma_pagamento"] = "pix"
-    if any(x in t for x in ["cartao", "cartão", "credito", "crédito", "debito", "débito"]) and st.get("forma_pagamento") != "cartão":
-        patch["forma_pagamento"] = "cartão"
+    if any(x in t for x in ["cartao", "credito", "debito"]) and st.get("forma_pagamento") != "cartao":
+        patch["forma_pagamento"] = "cartao"
     if "dinheiro" in t and st.get("forma_pagamento") != "dinheiro":
         patch["forma_pagamento"] = "dinheiro"
 

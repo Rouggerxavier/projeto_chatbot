@@ -3,6 +3,7 @@ from fastapi import FastAPI
 
 from database import init_db
 from app.api_routes import router
+from app.whatsapp_webhook import router as whatsapp_router
 from app.rag_products import rebuild_product_index
 
 
@@ -27,3 +28,4 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Chatbot Materiais de Construção", lifespan=lifespan)
 app.include_router(router)
+app.include_router(whatsapp_router)

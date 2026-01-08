@@ -26,41 +26,44 @@ def generate_payment_block(
     if forma_lower == "dinheiro":
         return "\n\nPagamento: **dinheiro** (a combinar na entrega/retirada)"
 
-    # Se nao tem email valido, nao tenta gerar pagamento online
+    # Se nao tem email valido, nao tenta gerar pagamento online (exceto dinheiro)
     if not cliente_email or "@" not in cliente_email:
+        if forma_lower in ("pix", "cartao"):
+            print(f"⚠️ Email ausente ou inválido para pagamento online: {cliente_email}")
+            return ""
         return ""
 
     try:
         _validate_email(cliente_email)
-    except ValueError:
+    except ValueError as e:
+        print(f"⚠️ Validação de email falhou: {e}")
         return ""
 
     try:
+        # Temporariamente ambos PIX e CARTAO usam Preference (checkout link)
         if forma_lower == "pix":
-            print(f"Gerando pagamento PIX para pedido #{pedido_id}, total=R$ {total}")
+            print(f"📤 Gerando Checkout (PIX) para pedido #{pedido_id}, total=R$ {total}, email={cliente_email}")
 
-            pix_result = create_pix_payment(
+            checkout_result = create_checkout_preference(
                 pedido_id=pedido_id,
                 total=total,
                 payer_email=cliente_email,
-                payer_first_name=cliente_nome.split()[0] if cliente_nome else "Cliente",
-                payer_last_name=" ".join(cliente_nome.split()[1:]) if " " in cliente_nome else "",
-                description=f"Pedido #{pedido_id} (PIX)",
+                title=f"Pedido #{pedido_id} (PIX)",
             )
 
-            qr_code = pix_result.get("qr_code") or pix_result.get("copy_and_paste")
-            status = pix_result.get("status", "pendente")
+            print(f"📥 Resposta MP Checkout (PIX): {checkout_result}")
 
-            if status == "pending" and qr_code:
-                return (
-                    f"\n\n**Pagamento PIX:**\n"
-                    f"```\n{qr_code}\n```\n"
-                    f"Copie o codigo acima para pagar."
-                )
-            return ""
+            payment_link = checkout_result.get("sandbox_init_point") or checkout_result.get("init_point")
 
-        elif forma_lower in ("cartao", "cartão"):
-            print(f"Gerando Checkout para pedido #{pedido_id}, total=R$ {total}")
+            if payment_link:
+                print(f"✅ Link gerado (PIX): {payment_link}")
+                return f"\n\n**Link de pagamento (PIX):** {payment_link}"
+            else:
+                print(f"❌ Nenhum link retornado (PIX). Resposta completa: {checkout_result}")
+                return ""
+
+        elif forma_lower == "cartao":
+            print(f"📤 Gerando Checkout para pedido #{pedido_id}, total=R$ {total}, email={cliente_email}")
 
             checkout_result = create_checkout_preference(
                 pedido_id=pedido_id,
@@ -69,11 +72,16 @@ def generate_payment_block(
                 title=f"Pedido #{pedido_id}",
             )
 
+            print(f"📥 Resposta MP Checkout: {checkout_result}")
+
             payment_link = checkout_result.get("sandbox_init_point") or checkout_result.get("init_point")
 
             if payment_link:
-                return f"\n\n**Link de pagamento:** {payment_link}"
-            return ""
+                print(f"✅ Link gerado: {payment_link}")
+                return f"\n\n**Link de pagamento (cartão):** {payment_link}"
+            else:
+                print(f"❌ Nenhum link retornado. Resposta completa: {checkout_result}")
+                return ""
 
         else:
             return ""
