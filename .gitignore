@@ -183,3 +183,6 @@ cython_debug/
 .env
 .zencoder 
 .zenflow
+
+# Local Chroma vector store (generated)
+data/chroma_products/
