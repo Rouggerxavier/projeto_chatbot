@@ -78,7 +78,7 @@ class WhatsAppWebhookPayload(BaseModel):
 
 
 @router.post("/whatsapp")
-async def receive_whatsapp_message(payload: WhatsAppWebhookPayload):
+async def receive_whatsapp_message(request: Request):
     """
     Receives incoming WhatsApp messages from Meta.
 
@@ -91,16 +91,26 @@ async def receive_whatsapp_message(payload: WhatsAppWebhookPayload):
     TODO: Integrate with app/flow_controller.py to process messages
     TODO: Send replies via WhatsApp Business API
     """
-    logger.info(f"Received WhatsApp webhook: {payload.object}")
+    # CRITICAL: Accept raw JSON to prevent Pydantic validation failures
+    # Meta payloads have optional/variable fields that break rigid schemas
+    try:
+        payload = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse webhook JSON: {e}")
+        # Still return 200 to prevent Meta retries
+        return {"status": "error", "message": "invalid_json"}
+
+    logger.info(f"Received WhatsApp webhook payload: {payload}")
 
     try:
         # Validate webhook object type
-        if payload.object != "whatsapp_business_account":
-            logger.warning(f"Unknown webhook object type: {payload.object}")
+        webhook_object = payload.get("object")
+        if webhook_object != "whatsapp_business_account":
+            logger.warning(f"Unknown webhook object type: {webhook_object}")
             return {"status": "ignored"}
 
         # Process each entry (can contain multiple messages)
-        for entry in payload.entry:
+        for entry in payload.get("entry", []):
             changes = entry.get("changes", [])
             for change in changes:
                 value = change.get("value", {})
@@ -115,20 +125,40 @@ async def receive_whatsapp_message(payload: WhatsAppWebhookPayload):
                     # Handle text messages
                     if msg_type == "text":
                         text_body = message.get("text", {}).get("body", "")
-                        logger.info(f"Message from {msg_from}: {text_body}")
+                        logger.info(f"📩 Mensagem recebida de {msg_from}: {text_body}")
 
-                        # TODO: Integrate with existing chatbot
-                        # Example:
-                        # from app.flow_controller import handle_message
-                        # response, needs_human = handle_message(
-                        #     user_message=text_body,
-                        #     session_id=msg_from,  # Use phone as session ID
-                        #     db=...
-                        # )
-                        # await send_whatsapp_reply(msg_from, response)
+                        # Integrate with existing chatbot
+                        from app.flow_controller import handle_message
+
+                        try:
+                            # Route message through chatbot flow
+                            response, needs_human = handle_message(
+                                message=text_body,
+                                session_id=msg_from  # Use phone as session ID
+                            )
+
+                            logger.info(f"🤖 Resposta do chatbot: {response[:100]}...")
+
+                            # Send reply back to WhatsApp
+                            send_result = send_whatsapp_reply(msg_from, response)
+                            logger.info(f"📤 Mensagem enviada com sucesso: {send_result.get('messages', [{}])[0].get('id', 'N/A')}")
+
+                            if needs_human:
+                                logger.warning(f"⚠️ Mensagem requer intervenção humana (session: {msg_from})")
+
+                        except Exception as msg_error:
+                            logger.error(f"❌ Erro ao processar mensagem de {msg_from}: {msg_error}", exc_info=True)
+                            # Send fallback error message to user
+                            try:
+                                send_whatsapp_reply(
+                                    msg_from,
+                                    "Desculpe, ocorreu um erro. Por favor, tente novamente ou entre em contato conosco."
+                                )
+                            except Exception as send_error:
+                                logger.error(f"❌ Falha ao enviar mensagem de erro: {send_error}")
 
                     else:
-                        logger.info(f"Non-text message type: {msg_type}")
+                        logger.info(f"📎 Tipo de mensagem não-texto ignorado: {msg_type} (de {msg_from})")
 
         # CRITICAL: Always return 200 OK quickly (within 20 seconds)
         # Meta will retry if no response or error status
@@ -146,77 +176,81 @@ async def receive_whatsapp_message(payload: WhatsAppWebhookPayload):
 def send_whatsapp_reply(to: str, message: str) -> dict:
     """
     Send text message via WhatsApp Business API (Graph API).
-
-    Args:
-        to: Recipient phone number in international format (e.g., "5511999999999")
-        message: Text message to send (max 4096 chars)
-
-    Returns:
-        dict: API response with message ID if successful
-
-    Raises:
-        Exception: If request fails or env vars are missing
-
-    Environment variables required:
-    - WHATSAPP_PHONE_NUMBER_ID: Get from Meta Business Dashboard
-      → App Dashboard → WhatsApp → API Setup → Phone Number ID
-    - WHATSAPP_ACCESS_TOKEN: Permanent access token
-      → App Dashboard → WhatsApp → API Setup → Permanent Token
-
-    Reference:
-    https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
     """
     import requests
 
-    # Load credentials from environment
-    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
+    # Load credentials from environment (strip whitespace!)
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
 
     if not phone_number_id or not access_token:
         error_msg = "Missing WHATSAPP_PHONE_NUMBER_ID or WHATSAPP_ACCESS_TOKEN in .env"
         logger.error(error_msg)
         raise ValueError(error_msg)
 
-    # Graph API endpoint
-    url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+    # Sanitize recipient number (remove +, spaces, dashes)
+    to_clean = to.replace("+", "").replace(" ", "").replace("-", "").strip()
 
-    # Request headers
+    # Truncate message if too long (WhatsApp limit: 4096 chars)
+    if len(message) > 4096:
+        message = message[:4090] + "..."
+        logger.warning(f"Message truncated to 4096 chars")
+
+    # Graph API endpoint (use v18.0 for better compatibility)
+    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
 
-    # Message payload
     payload = {
         "messaging_product": "whatsapp",
-        "to": to,
+        "recipient_type": "individual",
+        "to": to_clean,
         "type": "text",
         "text": {
+            "preview_url": False,
             "body": message
         }
     }
 
+    # Log full request details for debug
+    logger.info(f"📤 ENVIANDO WHATSAPP:")
+    logger.info(f"   URL: {url}")
+    logger.info(f"   TO: {to_clean}")
+    logger.info(f"   MSG: {message[:100]}...")
+    logger.info(f"   TOKEN (últimos 10): ...{access_token[-10:]}")
+
     try:
-        logger.info(f"Sending WhatsApp message to {to}: {message[:50]}...")
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
 
-        # Send POST request
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
-        response.raise_for_status()  # Raise exception for 4xx/5xx errors
+        # Log raw response for debug
+        logger.info(f"📥 RESPOSTA DA API:")
+        logger.info(f"   Status: {response.status_code}")
+        logger.info(f"   Body: {response.text}")
 
-        # Parse response
+        # Check for errors
+        if response.status_code >= 400:
+            error_data = response.json() if response.text else {}
+            error_msg = error_data.get("error", {}).get("message", response.text)
+            error_code = error_data.get("error", {}).get("code", "N/A")
+            logger.error(f"❌ WhatsApp API Error [{error_code}]: {error_msg}")
+            raise Exception(f"WhatsApp API Error [{error_code}]: {error_msg}")
+
         result = response.json()
-        logger.info(f"WhatsApp message sent successfully: {result}")
+
+        # Verify message was accepted
+        if "messages" in result and result["messages"]:
+            msg_id = result["messages"][0].get("id", "N/A")
+            logger.info(f"✅ Mensagem aceita pela API. ID: {msg_id}")
+        else:
+            logger.warning(f"⚠️ Resposta sem 'messages': {result}")
+
         return result
 
-    except requests.exceptions.HTTPError as e:
-        # API returned error (4xx/5xx)
-        error_detail = e.response.json() if e.response else str(e)
-        logger.error(f"WhatsApp API error: {error_detail}")
-        raise Exception(f"Failed to send WhatsApp message: {error_detail}")
-
     except requests.exceptions.RequestException as e:
-        # Network error, timeout, etc.
-        logger.error(f"Network error sending WhatsApp message: {e}")
+        logger.error(f"❌ Network error: {e}")
         raise Exception(f"Network error: {e}")
 
 
