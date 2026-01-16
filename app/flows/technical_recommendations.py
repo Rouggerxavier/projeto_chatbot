@@ -169,6 +169,111 @@ TECHNICAL_RULES: Dict[str, Dict[Tuple, Dict[str, Any]]] = {
 }
 
 
+def _is_valid_context_value(value: Any) -> bool:
+    """
+    Verifica se um valor de contexto é válido (não é vazio, unknown, ou default).
+
+    Args:
+        value: Valor a ser verificado
+
+    Returns:
+        True se valor é válido e explícito
+    """
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        return False
+
+    v = norm(value)
+
+    # Valores inválidos/placeholder
+    invalid_values = [
+        "", "unknown", "desconhecido", "nao informado", "none", "null",
+        "default", "padrao", "generico", "geral", "qualquer"
+    ]
+
+    return v not in invalid_values and len(v) > 0
+
+
+def can_generate_technical_answer(product: str, context: Dict[str, Any]) -> bool:
+    """
+    GATE CENTRAL - Verifica se pode gerar resposta técnica.
+
+    REGRA ABSOLUTA: Retorna False se NÃO houver contexto explícito coletado.
+
+    Esta função é o BLOQUEIO PRINCIPAL contra inferência prematura.
+    NENHUMA recomendação técnica pode ser gerada se esta função retornar False.
+
+    Args:
+        product: Categoria do produto
+        context: Contexto coletado
+
+    Returns:
+        True APENAS se contexto foi EXPLICITAMENTE coletado do usuário
+    """
+    if not product or not context:
+        return False
+
+    p = norm(product)
+    # application ?? SEMPRE obrigat??rio (exceto tinta)
+    application = context.get("application")
+    if not _is_valid_context_value(application):
+        if "tinta" not in p:
+            return False
+
+
+    # Regras específicas por produto
+    if "cimento" in p:
+        # Cimento: exige aplicação + ambiente (exceto fundação/reboco/piso)
+        app = norm(application)
+        if app in ["fundacao", "reboco", "piso"]:
+            return True  # Esses casos só precisam de aplicação
+
+        # Laje, contrapiso, etc: exigem ambiente também
+        environment = context.get("environment")
+        return _is_valid_context_value(environment)
+
+    if "tinta" in p:
+        # Tinta: exige superfície + ambiente
+        surface = context.get("surface")
+        environment = context.get("environment")
+        return _is_valid_context_value(surface) and _is_valid_context_value(environment)
+
+    if "areia" in p:
+        # Areia: aplicação é suficiente (granulometria é opcional)
+        return True
+
+    if "brita" in p:
+        # Brita: aplicação é suficiente
+        return True
+
+    if "argamassa" in p:
+        # Argamassa: aplicação é suficiente
+        return True
+
+    # Produto desconhecido: só aplicação basta
+    return True
+
+
+def _validate_minimum_context(product: str, context: Dict[str, Any]) -> bool:
+    """
+    Valida se contexto tem informações mínimas obrigatórias antes de gerar síntese técnica.
+
+    REGRA DE OURO: NUNCA permitir síntese técnica sem coletar informações essenciais.
+
+    IMPORTANTE: Esta função agora delega para can_generate_technical_answer() como gate principal.
+
+    Args:
+        product: Categoria do produto (cimento, tinta, areia, etc.)
+        context: Contexto coletado
+
+    Returns:
+        True se contexto é suficiente para recomendação técnica
+    """
+    # Usa gate central como validação principal
+    return can_generate_technical_answer(product, context)
+
+
 def get_technical_recommendation(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Busca recomendação técnica baseada no contexto coletado.
@@ -250,6 +355,8 @@ def format_recommendation_text(rec: Dict[str, Any], products: List[Any], context
     """
     Formata recomendação com explicação técnica (sem pressão).
 
+    IMPORTANTE: Usa can_generate_technical_answer() como gate antes de chamar LLM.
+
     Args:
         rec: Dicionário de recomendação (reasoning, options)
         products: Lista de produtos do catálogo
@@ -262,24 +369,32 @@ def format_recommendation_text(rec: Dict[str, Any], products: List[Any], context
         # Fallback genérico
         return f"Aqui estão as melhores opções:\n\n{format_options(products)}\n\nAlguma dessas faz sentido pra sua obra?"
 
-    # NOVO: Usa LLM para gerar síntese técnica contextual se contexto disponível
+    # GATE CENTRAL: Valida contexto ANTES de usar LLM
     if context and context.get("product"):
-        from app.llm_service import generate_technical_synthesis, extract_product_factors
-
         product_category = context.get("product", "")
-        technical_factors = extract_product_factors(product_category)
 
-        # Gera síntese técnica usando LLM
-        synthesis = generate_technical_synthesis(
-            product_category=product_category,
-            context=context,
-            technical_factors=technical_factors
-        )
+        # USA O GATE CENTRAL - bloqueia se contexto não for explícito
+        if can_generate_technical_answer(product_category, context):
+            # Contexto válido e EXPLÍCITO → pode usar LLM
+            from app.llm_service import generate_technical_synthesis, extract_product_factors
 
-        # Usa síntese gerada pela LLM se disponível, senão usa reasoning hardcoded
-        if synthesis:
-            reply = f"{synthesis}\n\n"
+            technical_factors = extract_product_factors(product_category)
+
+            # Gera síntese técnica usando LLM
+            synthesis = generate_technical_synthesis(
+                product_category=product_category,
+                context=context,
+                technical_factors=technical_factors
+            )
+
+            # Usa síntese gerada pela LLM se disponível, senão usa reasoning hardcoded
+            if synthesis:
+                reply = f"{synthesis}\n\n"
+            else:
+                reply = f"{rec['reasoning']}\n\n"
         else:
+            # BLOQUEIO: Contexto insuficiente → usa reasoning hardcoded (sem LLM)
+            print(f"[GATE] can_generate_technical_answer BLOQUEOU LLM para {product_category}. Contexto: {context}")
             reply = f"{rec['reasoning']}\n\n"
     else:
         # Fallback: usa reasoning hardcoded

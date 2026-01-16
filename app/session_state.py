@@ -39,6 +39,11 @@ DEFAULT_STATE: Dict[str, Any] = {
     "consultive_investigation_step": 0,         # Passo atual (0-3)
     "consultive_recommendation_shown": False,   # Flag: já mostrou recomendações
     "consultive_product_hint": None,            # Produto sendo investigado
+    # anti-repeticao em modo consultivo
+    "asked_context_fields": [],
+    "last_consultive_question_key": None,
+    "consultive_last_summary": None,
+    "consultive_catalog_constraints": {},
 }
 
 
@@ -94,3 +99,37 @@ def reset_state(user_id: str) -> None:
             db.commit()
     finally:
         db.close()
+
+
+def reset_consultive_context(user_id: str) -> None:
+    """
+    Reseta APENAS o contexto consultivo, preservando dados do cliente e carrinho.
+
+    CRÍTICO: Deve ser chamado sempre que:
+    - Novo pedido genérico é detectado ("quero cimento")
+    - Usuário muda de assunto
+    - Nova conversa inicia
+
+    Isso IMPEDE que contexto técnico anterior seja reutilizado indevidamente.
+    """
+    consultive_fields = {
+        "awaiting_usage_context": False,
+        "usage_context_product_hint": None,
+        "consultive_investigation": False,
+        "consultive_application": None,
+        "consultive_environment": None,
+        "consultive_exposure": None,
+        "consultive_load_type": None,
+        "consultive_investigation_step": 0,
+        "consultive_recommendation_shown": False,
+        "consultive_product_hint": None,
+        "consultive_surface": None,
+        "consultive_grain": None,
+        "consultive_size": None,
+        "consultive_argamassa_type": None,
+        "asked_context_fields": [],
+        "last_consultive_question_key": None,
+        "consultive_last_summary": None,
+        "consultive_catalog_constraints": {},
+    }
+    patch_state(user_id, consultive_fields)

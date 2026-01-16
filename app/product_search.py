@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from database import SessionLocal, Produto
+from database import SessionLocal, Produto, CategoriaProduto
 from app.rag_products import search_products_semantic
 
 
@@ -107,6 +107,7 @@ def _normalize_candidate(obj: Any, default_score: float = 0.40) -> Optional[Dict
             "unidade": unidade,
             "estoque": estoque,
             "score": score,
+            "descricao": obj.get("descricao", ""),
         }
 
     # Caso seja ORM Produto (fallback SQL)
@@ -136,6 +137,7 @@ def _normalize_candidate(obj: Any, default_score: float = 0.40) -> Optional[Dict
         "unidade": unidade,
         "estoque": estoque,
         "score": float(default_score),
+        "descricao": getattr(obj, "descricao", "") or "",
     }
 
 
@@ -188,6 +190,87 @@ def db_find_best_products(query: str, k: int = 6) -> List[Dict[str, Any]]:
                 break
 
     return out2[:k]
+
+
+def _score_candidate_by_terms(text: str, terms: List[str]) -> int:
+    if not terms:
+        return 0
+    t = (text or "").lower()
+    score = 0
+    for term in terms:
+        if term and term in t:
+            score += 1
+    return score
+
+
+def db_find_best_products_with_constraints(
+    query: str,
+    k: int = 6,
+    category_hint: Optional[str] = None,
+    must_terms: Optional[List[str]] = None,
+    should_terms: Optional[List[str]] = None,
+    strict: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Busca produtos com filtros de categoria e termos obrigatorios.
+    Retorna sempre lista de dicts normalizados.
+    """
+    q = (query or "").strip()
+    if not q and not category_hint and not must_terms and not should_terms:
+        return []
+
+    must_terms = [t for t in (must_terms or []) if t]
+    should_terms = [t for t in (should_terms or []) if t]
+    category_hint = (category_hint or "").strip()
+
+    db: Session = SessionLocal()
+    try:
+        qry = db.query(Produto)
+
+        if category_hint:
+            qry = qry.join(CategoriaProduto, Produto.id_categoria == CategoriaProduto.id, isouter=True)
+            cat = f"%{category_hint}%"
+            qry = qry.filter(
+                Produto.ativo == True,  # noqa: E712
+                (
+                    CategoriaProduto.nome.ilike(cat)
+                    | Produto.nome.ilike(cat)
+                    | Produto.descricao.ilike(cat)
+                ),
+            )
+        else:
+            qry = qry.filter(Produto.ativo == True)  # noqa: E712
+
+        if q:
+            like = f"%{q}%"
+            qry = qry.filter(Produto.nome.ilike(like) | Produto.descricao.ilike(like))
+
+        for term in must_terms:
+            like = f"%{term}%"
+            qry = qry.filter(Produto.nome.ilike(like) | Produto.descricao.ilike(like))
+
+        rows = qry.limit(max(k * 3, k)).all()
+        if strict and must_terms and not rows:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            normed = _normalize_candidate(r, default_score=0.55)
+            if normed:
+                out.append(normed)
+
+        if not out:
+            return []
+
+        if should_terms:
+            for it in out:
+                text = f"{it.get('nome', '')} {it.get('descricao', '')}".strip()
+                it["score"] = float(it.get("score", 0.0)) + _score_candidate_by_terms(text.lower(), should_terms)
+
+        out.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return out[:k]
+    finally:
+        db.close()
 
 
 def format_options(options: List[Dict[str, Any]]) -> str:

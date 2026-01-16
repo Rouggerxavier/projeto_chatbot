@@ -7,12 +7,50 @@ Responsabilidades:
 """
 import os
 import json
+import logging
 from typing import Optional, Dict, List, Any
 from groq import Groq
+from app import settings
 
 
 # Cliente Groq (singleton)
 _groq_client = None
+
+_ROUTER_INTENTS = {
+    "BROWSE_CATALOG",
+    "FIND_PRODUCT",
+    "TECHNICAL_QUESTION",
+    "ADD_TO_CART",
+    "REMOVE_ITEM",
+    "CHECKOUT",
+    "PAYMENT",
+    "ORDER_STATUS",
+    "SMALLTALK",
+    "UNKNOWN",
+}
+
+_ROUTER_ACTIONS = {
+    "SHOW_CATALOG",
+    "SEARCH_PRODUCTS",
+    "ASK_CLARIFYING_QUESTION",
+    "ASK_USAGE_CONTEXT",
+    "ANSWER_WITH_RAG",
+    "HANDOFF_CHECKOUT",
+    "NOOP",
+}
+
+_CONSULTIVE_ACTIONS = {
+    "ASK_CONTEXT",
+    "READY_TO_ANSWER",
+    "ASK_CLARIFYING_QUESTION",
+}
+
+_RENDER_STYLES = {
+    "NEUTRO",
+    "VENDEDOR",
+    "TECNICO",
+    "CURTO_WHATSAPP",
+}
 
 
 def _get_groq_client() -> Groq:
@@ -24,6 +62,411 @@ def _get_groq_client() -> Groq:
             raise ValueError("GROQ_API_KEY não encontrada no .env")
         _groq_client = Groq(api_key=api_key)
     return _groq_client
+
+
+def _redact_text(text: str) -> str:
+    """Reduz risco de PII em logs."""
+    if not text:
+        return ""
+    t = text
+    import re
+    t = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "[email]", t)
+    t = re.sub(r"\b\d{6,}\b", "[num]", t)
+    t = re.sub(r"\b\d{2,3}\s*\d{4,5}-?\d{4}\b", "[phone]", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) > 120:
+        t = t[:117] + "..."
+    return t
+
+
+def _parse_json_text(raw: str) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    content = raw.strip()
+    if content.startswith("```"):
+        content = content.strip("`")
+    content = content.strip()
+    if "{" in content and "}" in content:
+        content = content[content.find("{") : content.rfind("}") + 1]
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _validate_route_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+
+    intent = payload.get("intent")
+    action = payload.get("action")
+    confidence = payload.get("confidence")
+
+    if intent not in _ROUTER_INTENTS:
+        return None
+    if action not in _ROUTER_ACTIONS:
+        return None
+    try:
+        confidence_val = float(confidence)
+    except Exception:
+        return None
+    if confidence_val < 0.0 or confidence_val > 1.0:
+        return None
+
+    product_query = payload.get("product_query", None)
+    category_hint = payload.get("category_hint", None)
+    constraints = payload.get("constraints", {})
+    clarifying_question = payload.get("clarifying_question", None)
+
+    if product_query is not None and not isinstance(product_query, str):
+        return None
+    if category_hint is not None and not isinstance(category_hint, str):
+        return None
+    if clarifying_question is not None and not isinstance(clarifying_question, str):
+        return None
+    if constraints is None:
+        constraints = {}
+    if not isinstance(constraints, dict):
+        return None
+
+    return {
+        "intent": intent,
+        "product_query": product_query,
+        "category_hint": category_hint,
+        "constraints": constraints,
+        "action": action,
+        "clarifying_question": clarifying_question,
+        "confidence": confidence_val,
+    }
+
+
+def _validate_consultive_plan(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+
+    next_action = payload.get("next_action")
+    confidence = payload.get("confidence")
+
+    if next_action not in _CONSULTIVE_ACTIONS:
+        return None
+    try:
+        confidence_val = float(confidence)
+    except Exception:
+        return None
+    if confidence_val < 0.0 or confidence_val > 1.0:
+        return None
+
+    missing_fields = payload.get("missing_fields", [])
+    next_question = payload.get("next_question", None)
+    assumptions = payload.get("assumptions", [])
+
+    if missing_fields is None:
+        missing_fields = []
+    if not isinstance(missing_fields, list) or not all(isinstance(x, str) for x in missing_fields):
+        return None
+    if next_question is not None and not isinstance(next_question, str):
+        return None
+    if assumptions is None:
+        assumptions = []
+    if not isinstance(assumptions, list) or not all(isinstance(x, str) for x in assumptions):
+        return None
+
+    return {
+        "missing_fields": missing_fields,
+        "next_action": next_action,
+        "next_question": next_question,
+        "assumptions": assumptions,
+        "confidence": confidence_val,
+    }
+
+
+def route_intent(message: str, state_summary: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    LLM Router: classifica a intencao e retorna decisao estruturada em JSON.
+
+    Retorna dict validado ou None em erro (para fallback do fluxo atual).
+    """
+    if not message or not isinstance(state_summary, dict):
+        return None
+
+    prompt = f"""Voce e um roteador LLM para um chatbot de materiais de construcao.
+
+REGRAS IMPORTANTES:
+- NUNCA responda ao usuario, somente JSON valido.
+- NAO invente produtos.
+- NUNCA liste catalogo aqui. Apenas escolha a acao.
+- Se o usuario perguntar "que tipos voces tem / quais opcoes / tem X?", use:
+  intent=BROWSE_CATALOG e action=SHOW_CATALOG.
+- Se for recomendacao tecnica (ex: "qual melhor X para Y?"):
+  - Se faltarem dados criticos, use action=ASK_USAGE_CONTEXT e uma pergunta curta.
+  - Se ja houver contexto suficiente em state_summary, use action=ANSWER_WITH_RAG.
+- Se for checkout/pagamento/orcamento, use action=HANDOFF_CHECKOUT.
+- Se estiver incerto, use intent=UNKNOWN e action=ASK_CLARIFYING_QUESTION ou NOOP.
+
+RETORNE SOMENTE ESTE JSON (sem texto extra):
+{{
+  "intent": "BROWSE_CATALOG|FIND_PRODUCT|TECHNICAL_QUESTION|ADD_TO_CART|REMOVE_ITEM|CHECKOUT|PAYMENT|ORDER_STATUS|SMALLTALK|UNKNOWN",
+  "product_query": "string ou null",
+  "category_hint": "string ou null",
+  "constraints": {{}},
+  "action": "SHOW_CATALOG|SEARCH_PRODUCTS|ASK_CLARIFYING_QUESTION|ASK_USAGE_CONTEXT|ANSWER_WITH_RAG|HANDOFF_CHECKOUT|NOOP",
+  "clarifying_question": "string ou null",
+  "confidence": 0.0
+}}
+
+MENSAGEM DO USUARIO:
+{message}
+
+STATE_SUMMARY (json):
+{json.dumps(state_summary, ensure_ascii=False)}
+"""
+
+    try:
+        client = _get_groq_client()
+        logging.info(
+            "llm_router input_len=%s state_keys=%s msg=%s",
+            len(message),
+            list(state_summary.keys()),
+            _redact_text(message),
+        )
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=200,
+        )
+
+        raw = response.choices[0].message.content if response.choices else ""
+        payload = _parse_json_text(raw)
+        validated = _validate_route_payload(payload or {})
+        if not validated:
+            logging.info("llm_router invalid_json output=%s", _redact_text(str(raw)))
+            return None
+
+        logging.info(
+            "llm_router output intent=%s action=%s confidence=%.2f product_query=%s",
+            validated.get("intent"),
+            validated.get("action"),
+            float(validated.get("confidence", 0.0)),
+            _redact_text(validated.get("product_query") or ""),
+        )
+        return validated
+    except Exception as e:
+        logging.info("llm_router error=%s", str(e)[:200])
+        return None
+
+
+def plan_consultive_next_step(
+    message: str,
+    state_summary: Dict[str, Any],
+    product_hint: Optional[str],
+    known_context: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    Planner consultivo: decide proximo passo (perguntar contexto ou responder).
+
+    Retorna dict validado ou None em erro (para fallback do fluxo atual).
+    """
+    if not message or not isinstance(state_summary, dict) or not isinstance(known_context, dict):
+        return None
+
+    prompt = f"""Voce e um planner consultivo para materiais de construcao.
+Seu trabalho e decidir o proximo passo com base na pergunta e contexto.
+
+REGRAS (ANTI-ALUCINACAO):
+- NUNCA liste produtos, catalogo, preco ou estoque.
+- NUNCA invente dados.
+- Responda SOMENTE com JSON valido.
+- Pergunte UMA pergunta curta por vez (no maximo 2 se indispensavel).
+- Priorize campos criticos primeiro (ex: aplicacao/uso).
+- Se a pergunta ja contem o contexto, nao repita.
+- Se for ambigua, use ASK_CLARIFYING_QUESTION com pergunta curta.
+
+FOCO:
+- Descobrir: uso/aplicacao, ambiente, substrato/superficie, exposicao, umidade, carga, acabamento.
+- Se product_hint for generico (cimento, tinta, tijolo), pergunte primeiro aplicacao + ambiente.
+- Se known_context ja tiver application e environment, avance.
+
+SCHEMA DE SAIDA:
+{{
+  "missing_fields": ["..."],
+  "next_action": "ASK_CONTEXT|READY_TO_ANSWER|ASK_CLARIFYING_QUESTION",
+  "next_question": "string ou null",
+  "assumptions": ["..."],
+  "confidence": 0.0
+}}
+
+MENSAGEM DO USUARIO:
+{message}
+
+PRODUCT_HINT:
+{product_hint or ""}
+
+KNOWN_CONTEXT (json):
+{json.dumps(known_context, ensure_ascii=False)}
+
+STATE_SUMMARY (json):
+{json.dumps(state_summary, ensure_ascii=False)}
+"""
+
+    try:
+        client = _get_groq_client()
+        logging.info(
+            "llm_planner input_len=%s product_hint=%s msg=%s",
+            len(message),
+            _redact_text(product_hint or ""),
+            _redact_text(message),
+        )
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=200,
+        )
+
+        raw = response.choices[0].message.content if response.choices else ""
+        payload = _parse_json_text(raw)
+        validated = _validate_consultive_plan(payload or {})
+        if not validated:
+            logging.info("llm_planner invalid_json output=%s", _redact_text(str(raw)))
+            return None
+
+        logging.info(
+            "llm_planner output action=%s confidence=%.2f missing=%s",
+            validated.get("next_action"),
+            float(validated.get("confidence", 0.0)),
+            validated.get("missing_fields"),
+        )
+        return validated
+    except Exception as e:
+        logging.info("llm_planner error=%s", str(e)[:200])
+        return None
+
+
+def _extract_fact_items(facts: Dict[str, Any]) -> List[Dict[str, str]]:
+    items = facts.get("items") or facts.get("suggested_items") or []
+    if not isinstance(items, list):
+        return []
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = it.get("name") or it.get("nome")
+        if not name:
+            continue
+        out.append(
+            {
+                "id": str(it.get("id") or it.get("product_id") or ""),
+                "name": str(name),
+                "price": str(it.get("price") or it.get("preco") or ""),
+                "unit": str(it.get("unit") or it.get("unidade") or ""),
+            }
+        )
+    return out
+
+
+def _render_output_is_safe(text: str, facts: Dict[str, Any]) -> bool:
+    if not text:
+        return False
+    if len(text) > 1200:
+        return False
+    if "http://" in text or "https://" in text:
+        return False
+
+    items = _extract_fact_items(facts)
+    allowed_names = [it["name"].lower() for it in items if it.get("name")]
+    allowed_prices = [it["price"] for it in items if it.get("price")]
+
+    if "R$" in text and not any(p for p in allowed_prices if p in text):
+        return False
+
+    if allowed_names:
+        for line in text.splitlines():
+            line_l = line.lower().strip()
+            if not line_l:
+                continue
+            is_list_like = False
+            if line_l.startswith(("-", "*", "•")):
+                is_list_like = True
+            if line_l[:2].isdigit() and ")" in line_l[:4]:
+                is_list_like = True
+            if is_list_like and not any(name in line_l for name in allowed_names):
+                return False
+
+    return True
+
+
+def render_customer_message(style: str, facts: Dict[str, Any]) -> Optional[str]:
+    """
+    Redator LLM: transforma facts em mensagem curta para WhatsApp.
+    Retorna texto validado ou None em falha (para fallback).
+    """
+    if not isinstance(facts, dict):
+        return None
+    if style not in _RENDER_STYLES:
+        style = "NEUTRO"
+
+    facts_json = json.dumps(facts, ensure_ascii=False)
+
+    prompt = f"""Voce e um redator de mensagens para WhatsApp (PT-BR).
+Use SOMENTE as informacoes em FACTS. NUNCA invente.
+
+REGRAS:
+- Nao criar itens, precos, estoque, marcas, condicoes ou prazos.
+- Se faltar informacao para responder, faca 1 pergunta curta.
+- Mensagem curta, escaneavel (WhatsApp): frases curtas, bullets se necessario.
+- Quando listar produtos, use exatamente os nomes/ids dos FACTS.
+- Se FACTS tiver exact_match_found=false e unavailable_specs, diga que nao encontrou no catalogo.
+
+ESTILO: {style}
+
+FACTS (json):
+{facts_json}
+
+Retorne apenas o texto da mensagem (sem JSON, sem markdown extra).
+"""
+
+    try:
+        client = _get_groq_client()
+        logging.info(
+            "llm_render input type=%s style=%s",
+            _redact_text(str(facts.get("type", ""))),
+            style,
+        )
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=250,
+        )
+        raw = response.choices[0].message.content if response.choices else ""
+        text = (raw or "").strip().strip("`").strip()
+        if text.startswith("{") and text.endswith("}"):
+            return None
+        if not _render_output_is_safe(text, facts):
+            logging.info("llm_render unsafe_output=%s", _redact_text(text))
+            return None
+        return text
+    except Exception as e:
+        logging.info("llm_render error=%s", str(e)[:200])
+        return None
+
+
+def maybe_render_customer_message(style: str, facts: Dict[str, Any]) -> Optional[str]:
+    if not settings.LLM_RENDERING_ENABLED:
+        logging.info("llm_render skipped feature_flag=off")
+        return None
+    rendered = render_customer_message(style, facts)
+    if rendered:
+        logging.info("llm_render success")
+        return rendered
+    logging.info("llm_render fallback")
+    return None
 
 
 def interpret_choice(
@@ -125,6 +568,8 @@ def generate_technical_synthesis(
     """
     Gera síntese técnica contextual usando LLM.
 
+    IMPORTANTE: Só deve ser chamada com contexto COMPLETO (validado por can_generate_technical_answer).
+
     Args:
         product_category: Categoria do produto (cimento, tinta, areia, brita, argamassa)
         context: Contexto coletado {"application": "laje", "environment": "externa", ...}
@@ -142,6 +587,19 @@ def generate_technical_synthesis(
         "Para laje externa exposta em uso residencial, o ideal é cimento com resistência a sulfatos..."
     """
     if not product_category or not context:
+        return ""
+
+    # BLOQUEIO DE SEGURANÇA DUPLO: Importa e usa gate central
+    # Esta é uma proteção ADICIONAL caso alguém chame esta função diretamente
+    from app.flows.technical_recommendations import can_generate_technical_answer
+
+    if not can_generate_technical_answer(product_category, context):
+        print(f"[BLOCK] generate_technical_synthesis BLOQUEADA pelo gate. Produto: {product_category}, Contexto: {context}")
+        return ""
+
+    # Validação básica adicional: pelo menos "application" deve estar presente
+    if not context.get("application"):
+        print(f"[WARN] generate_technical_synthesis chamada sem 'application' no contexto. Produto: {product_category}")
         return ""
 
     # Monta contexto legível

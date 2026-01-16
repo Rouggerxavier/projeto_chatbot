@@ -14,11 +14,12 @@ from app.text_utils import (
     norm,
 )
 from app.persistence import save_chat_db
-from app.cart_service import format_orcamento, reset_orcamento
+from app.cart_service import format_orcamento, reset_orcamento, list_orcamento_items
 from app.product_search import (
     db_find_best_products,
     format_options,
     db_get_product_by_id,
+    db_find_best_products_with_constraints,
 )
 from app.parsing import (
     extract_kg_quantity,
@@ -28,9 +29,18 @@ from app.parsing import (
 from app.preferences import handle_preferences, message_is_preferences_only, maybe_register_address
 from app.checkout import handle_more_products_question
 from app.checkout_handlers.main import handle_checkout
-from app.session_state import get_state, patch_state
+from app.session_state import get_state, patch_state, reset_consultive_context
 from app.checkout_handlers.extractors import extract_email
 from app.consultive_mode import answer_consultive_question
+from app.llm_service import (
+    route_intent,
+    plan_consultive_next_step,
+    generate_technical_synthesis,
+    extract_product_factors,
+    maybe_render_customer_message,
+)
+from app.flows.technical_recommendations import can_generate_technical_answer
+from app.search_utils import extract_catalog_constraints_from_consultive
 
 # Importa dos modulos flows/
 from app.flows.quantity import handle_pending_qty
@@ -153,10 +163,8 @@ def auto_suggest_products(message: str, session_id: str) -> Optional[str]:
     if teach:
         return teach
 
-    # NOVO: verifica se é produto genérico (precisa contexto de uso)
-    requested_kg = extract_kg_quantity(message)
-    if not requested_kg and is_generic_product(hint):
-        # Produto genérico sem quantidade -> pergunta contexto de uso
+    # NOVO: verifica se produto generico (precisa contexto de uso)
+    if is_generic_product(hint):
         return ask_usage_context(session_id, hint)
 
     options = db_find_best_products(hint, k=6) or []
@@ -207,6 +215,378 @@ def auto_suggest_products(message: str, session_id: str) -> Optional[str]:
         "Qual voce quer? (responda 1, 2, 3... ou escreva o nome parecido)"
         + extra
     )
+
+
+def _build_state_summary(session_id: str, st: Dict[str, Any]) -> Dict[str, Any]:
+    items = list_orcamento_items(session_id)
+    cart_has_items = bool(items)
+
+    last_known = (
+        st.get("last_hint")
+        or st.get("consultive_product_hint")
+        or st.get("usage_context_product_hint")
+    )
+
+    consultive_fields = {
+        "consultive_application": "application",
+        "consultive_environment": "environment",
+        "consultive_exposure": "exposure",
+        "consultive_load_type": "load_type",
+        "consultive_surface": "surface",
+        "consultive_grain": "grain",
+        "consultive_size": "size",
+        "consultive_argamassa_type": "argamassa_type",
+    }
+    has_any_consultive = any(st.get(k) for k in consultive_fields)
+    missing = []
+    if has_any_consultive:
+        missing = [v for k, v in consultive_fields.items() if not st.get(k)]
+
+    return {
+        "in_checkout": bool(st.get("checkout_mode")),
+        "awaiting_choice": bool(st.get("last_suggestions")),
+        "awaiting_quantity": bool(st.get("awaiting_qty")),
+        "consultive_pending": bool(st.get("awaiting_usage_context") or st.get("consultive_investigation")),
+        "cart_has_items": cart_has_items,
+        "last_known_product": last_known,
+        "last_known_category": last_known,
+        "consultive_context_missing": missing,
+        "asked_context_fields": st.get("asked_context_fields") or [],
+    }
+
+
+def _should_bypass_router(st: Dict[str, Any], message: str) -> bool:
+    t = norm(message)
+    is_finalize = any(k in t for k in ["finalizar", "fechar", "pagar", "checkout", "processar"])
+
+    return any(
+        [
+            bool(st.get("last_suggestions")),
+            bool(st.get("awaiting_qty")),
+            bool(st.get("pending_product_id")),
+            bool(st.get("awaiting_remove_choice")),
+            bool(st.get("awaiting_remove_qty")),
+            bool(st.get("checkout_mode")),
+            bool(st.get("asking_for_more")),
+            bool(st.get("awaiting_usage_context")),
+            bool(st.get("consultive_investigation")),
+            bool(is_finalize),
+        ]
+    )
+
+
+def _constraints_to_query(constraints: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    if not isinstance(constraints, dict):
+        return ""
+    for _, v in constraints.items():
+        if isinstance(v, (str, int, float)):
+            parts.append(str(v))
+        elif isinstance(v, list):
+            parts.extend([str(x) for x in v if isinstance(x, (str, int, float))])
+    return " ".join(parts).strip()
+
+
+def _set_last_suggestions(session_id: str, options: List[Dict[str, Any]], hint: str) -> None:
+    last_suggestions: List[Dict[str, Any]] = []
+    for o in options:
+        pid = _safe_option_id(o)
+        if pid is None:
+            continue
+        last_suggestions.append({"id": pid, "nome": _safe_option_name(o)})
+    patch_state(
+        session_id,
+        {
+            "last_suggestions": last_suggestions,
+            "last_hint": hint,
+            "last_requested_kg": None,
+        },
+    )
+
+
+def _catalog_reply_for_query(session_id: str, query: str, clarifying_question: Optional[str]) -> Optional[str]:
+    if not query:
+        return clarifying_question or "Qual produto voce procura?"
+
+    options = db_find_best_products(query, k=6) or []
+    if not options:
+        return clarifying_question or "Nao encontrei esse produto. Qual voce procura?"
+
+    _set_last_suggestions(session_id, options, query)
+    facts_items = []
+    for o in options:
+        facts_items.append(
+            {
+                "id": str(_safe_option_id(o) or ""),
+                "name": _safe_option_name(o),
+                "price": f"{float(o.get('preco', 0.0) or 0.0):.2f}",
+                "unit": o.get("unidade", "UN"),
+            }
+        )
+    facts = {
+        "type": "catalog",
+        "query": query,
+        "items": facts_items,
+        "next_question": "Qual voce quer? (responda 1, 2, 3... ou escreva o nome parecido)",
+    }
+    rendered = maybe_render_customer_message("CURTO_WHATSAPP", facts)
+    if rendered:
+        return rendered
+    return (
+        f"Encontrei estas opcoes no catalogo para **{query}**:\n\n"
+        f"{format_options(options)}\n\n"
+        "Qual voce quer? (responda 1, 2, 3... ou escreva o nome parecido)"
+    )
+
+
+def _has_consultive_context(st: Dict[str, Any], constraints: Dict[str, Any]) -> bool:
+    if constraints:
+        return True
+    return any(
+        [
+            st.get("consultive_application"),
+            st.get("consultive_environment"),
+            st.get("consultive_exposure"),
+            st.get("consultive_load_type"),
+            st.get("consultive_surface"),
+            st.get("consultive_grain"),
+            st.get("consultive_size"),
+        ]
+    )
+
+
+def _build_known_context(st: Dict[str, Any], constraints: Dict[str, Any]) -> Dict[str, Any]:
+    ctx = {
+        "application": st.get("consultive_application"),
+        "environment": st.get("consultive_environment"),
+        "exposure": st.get("consultive_exposure"),
+        "load_type": st.get("consultive_load_type"),
+        "surface": st.get("consultive_surface"),
+        "grain": st.get("consultive_grain"),
+        "size": st.get("consultive_size"),
+        "argamassa_type": st.get("consultive_argamassa_type"),
+    }
+    if isinstance(constraints, dict):
+        for k, v in constraints.items():
+            if k in ctx and v:
+                ctx[k] = v
+    return {k: v for k, v in ctx.items() if v}
+
+
+def _infer_missing_fields(product_hint: str, context: Dict[str, Any]) -> List[str]:
+    p = norm(product_hint or "")
+    missing: List[str] = []
+
+    if "tinta" in p:
+        if not context.get("surface"):
+            missing.append("surface")
+        if not context.get("environment"):
+            missing.append("environment")
+        return missing
+
+    if not context.get("application"):
+        missing.append("application")
+        return missing
+
+    if "cimento" in p:
+        app = norm(context.get("application"))
+        if app not in ["fundacao", "reboco", "piso"] and not context.get("environment"):
+            missing.append("environment")
+        return missing
+
+    return missing
+
+
+def _question_for_field(product_hint: str, field: str) -> str:
+    p = norm(product_hint or "")
+    if field == "application":
+        return "Qual uso voce precisa? (ex.: laje, reboco, piso, fundacao)"
+    if field == "environment":
+        return "Vai usar em area interna ou externa?"
+    if field == "exposure":
+        return "O local fica coberto ou exposto?"
+    if field == "load_type":
+        return "E uso residencial ou carga pesada?"
+    if field == "surface":
+        return "Qual superficie vai receber a tinta? (parede, madeira, metal)"
+    if field == "grain":
+        return "Qual granulometria voce precisa? (fina, media, grossa)"
+    if field == "size":
+        return "Qual tamanho voce precisa?"
+    if field == "argamassa_type":
+        return "Qual tipo de argamassa? (assentamento, reboco, cola)"
+    if "tijolo" in p:
+        return "Voce precisa de tijolo estrutural ou de vedacao?"
+    return "Pode explicar melhor o uso?"
+
+
+def _apply_asked_context_fields(session_id: str, st: Dict[str, Any], field: Optional[str]) -> None:
+    asked = list(st.get("asked_context_fields") or [])
+    if field and field not in asked:
+        asked.append(field)
+    patch_state(session_id, {"asked_context_fields": asked, "last_consultive_question_key": field})
+
+
+def _search_consultive_catalog(
+    product_hint: str,
+    summary_text: str,
+    known_context: Dict[str, Any],
+    query_base: str,
+) -> Dict[str, Any]:
+    try:
+        constraints = extract_catalog_constraints_from_consultive(summary_text, product_hint, known_context)
+    except Exception:
+        constraints = None
+
+    if not constraints:
+        items = db_find_best_products_with_constraints(
+            query_base,
+            k=6,
+            category_hint=product_hint or None,
+            strict=False,
+        )
+        if not items and query_base:
+            items = db_find_best_products(query_base, k=6) or []
+        return {
+            "items": items,
+            "exact_match_found": False,
+            "unavailable_specs": [],
+            "warning_text": None,
+            "constraints": {},
+        }
+
+    category_hint = constraints.get("category_hint") or product_hint or None
+    must_terms = constraints.get("must_terms") or []
+    should_terms = constraints.get("should_terms") or []
+
+    phase1 = db_find_best_products_with_constraints(
+        query_base,
+        k=6,
+        category_hint=category_hint,
+        must_terms=must_terms,
+        strict=True,
+    )
+    if phase1:
+        return {
+            "items": phase1,
+            "exact_match_found": True,
+            "unavailable_specs": [],
+            "warning_text": None,
+            "constraints": constraints,
+        }
+
+    unavailable_specs = list(must_terms)
+    phase2 = db_find_best_products_with_constraints(
+        query_base or (category_hint or ""),
+        k=6,
+        category_hint=category_hint,
+        should_terms=should_terms,
+        strict=False,
+    )
+
+    warning_text = None
+    if unavailable_specs:
+        spec_text = ", ".join(unavailable_specs).upper()
+        warning_text = (
+            f"Nao encontrei {spec_text} no catalogo agora, "
+            "mas posso sugerir opcoes disponiveis:"
+        )
+
+    return {
+        "items": phase2,
+        "exact_match_found": False,
+        "unavailable_specs": unavailable_specs,
+        "warning_text": warning_text,
+        "constraints": constraints,
+    }
+
+
+def _handle_consultive_planner(
+    session_id: str,
+    message: str,
+    st: Dict[str, Any],
+    product_hint: str,
+    constraints: Dict[str, Any],
+    fallback_to_usage: bool,
+    fallback_to_consultive: bool,
+) -> Optional[Tuple[str, bool]]:
+    state_summary = _build_state_summary(session_id, st)
+    known_context = _build_known_context(st, constraints)
+    plan = plan_consultive_next_step(message, state_summary, product_hint, known_context)
+    if not plan:
+        if fallback_to_usage and product_hint:
+            reply = ask_usage_context(session_id, product_hint)
+            return reply, False
+        if fallback_to_consultive:
+            reply, needs = answer_consultive_question(message, product_hint)
+            return reply, needs
+        return None
+
+    next_action = plan.get("next_action")
+    missing_fields = plan.get("missing_fields") or []
+    next_question = plan.get("next_question")
+    asked_fields = set(st.get("asked_context_fields") or [])
+
+    if next_action == "ASK_CONTEXT":
+        field = None
+        for mf in missing_fields:
+            if mf not in asked_fields:
+                field = mf
+                break
+        if not field and missing_fields:
+            field = missing_fields[0]
+        question = next_question or _question_for_field(product_hint, field or "")
+        _apply_asked_context_fields(session_id, st, field)
+        return question, False
+
+    if next_action == "ASK_CLARIFYING_QUESTION":
+        question = next_question or "Voce quer dica tecnica ou ver opcoes do catalogo?"
+        _apply_asked_context_fields(session_id, st, "clarify")
+        return question, False
+
+    if next_action == "READY_TO_ANSWER":
+        context_for_gate = dict(known_context)
+        context_for_gate["product"] = product_hint
+        if can_generate_technical_answer(product_hint, context_for_gate):
+            factors = extract_product_factors(product_hint)
+            synthesis = generate_technical_synthesis(product_hint, context_for_gate, factors)
+            if synthesis:
+                catalog_result = _search_consultive_catalog(
+                    product_hint=product_hint,
+                    summary_text=synthesis,
+                    known_context=known_context,
+                    query_base=product_hint,
+                )
+                patch_state(
+                    session_id,
+                    {
+                        "consultive_last_summary": synthesis,
+                        "consultive_catalog_constraints": catalog_result.get("constraints") or {},
+                    },
+                )
+                facts = {
+                    "type": "consultive_answer",
+                    "summary": synthesis,
+                    "recommended_next_steps": ["Quer que eu te ajude a escolher e comprar?"],
+                    "suggested_items": [],
+                    "recommended_specs": catalog_result.get("constraints", {}).get("must_terms", []),
+                    "exact_match_found": bool(catalog_result.get("exact_match_found")),
+                    "unavailable_specs": catalog_result.get("unavailable_specs", []),
+                }
+                rendered = maybe_render_customer_message("TECNICO", facts)
+                if rendered:
+                    return rendered, False
+            reply = synthesis or "Posso ajudar com uma recomendacao tecnica se voce me passar mais contexto."
+            reply += "\n\nQuer que eu te ajude a escolher e comprar?"
+            return reply, False
+
+        missing = _infer_missing_fields(product_hint, context_for_gate)
+        field = missing[0] if missing else None
+        question = _question_for_field(product_hint, field or "application")
+        _apply_asked_context_fields(session_id, st, field or "application")
+        return question, False
+
+    return None
 
 
 def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
@@ -291,16 +671,114 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, pending, needs_human)
             return pending, needs_human
 
-        # NOVO: investigação consultiva progressiva (modo avançado)
+        # LLM Router (opt-in) - nao interrompe fluxos pendentes
+        st_router = get_state(session_id)
+        if not _should_bypass_router(st_router, message):
+            state_summary = _build_state_summary(session_id, st_router)
+            route = route_intent(message, state_summary)
+            if route:
+                action = route.get("action")
+                product_query = route.get("product_query") or ""
+                category_hint = route.get("category_hint") or ""
+                constraints = route.get("constraints") or {}
+                clarifying_question = route.get("clarifying_question")
+
+                search_query = " ".join(
+                    [
+                        product_query,
+                        category_hint if category_hint not in product_query else "",
+                        _constraints_to_query(constraints),
+                    ]
+                ).strip()
+
+                if action == "SHOW_CATALOG":
+                    router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
+                    if router_reply:
+                        router_reply = sanitize_reply(router_reply)
+                        save_chat_db(session_id, message, router_reply, needs_human)
+                        return router_reply, needs_human
+
+                elif action == "SEARCH_PRODUCTS":
+                    router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
+                    if router_reply:
+                        router_reply = sanitize_reply(router_reply)
+                        save_chat_db(session_id, message, router_reply, needs_human)
+                        return router_reply, needs_human
+
+                elif action == "ASK_USAGE_CONTEXT":
+                    hint = category_hint or product_query or extract_product_hint(message)
+                    if hint:
+                        planned = _handle_consultive_planner(
+                            session_id=session_id,
+                            message=message,
+                            st=st_router,
+                            product_hint=hint,
+                            constraints=constraints,
+                            fallback_to_usage=True,
+                            fallback_to_consultive=False,
+                        )
+                        if planned:
+                            router_reply, needs_human = planned
+                            router_reply = sanitize_reply(router_reply)
+                            save_chat_db(session_id, message, router_reply, needs_human)
+                            return router_reply, needs_human
+                    if clarifying_question:
+                        router_reply = sanitize_reply(clarifying_question)
+                        save_chat_db(session_id, message, router_reply, needs_human)
+                        return router_reply, needs_human
+
+                elif action == "ANSWER_WITH_RAG":
+                    hint = category_hint or product_query or st_router.get("consultive_product_hint") or st_router.get("last_hint")
+                    planned = _handle_consultive_planner(
+                        session_id=session_id,
+                        message=message,
+                        st=st_router,
+                        product_hint=hint or "",
+                        constraints=constraints,
+                        fallback_to_usage=not _has_consultive_context(st_router, constraints),
+                        fallback_to_consultive=True,
+                    )
+                    if planned:
+                        router_reply, needs_human = planned
+                        router_reply = sanitize_reply(router_reply)
+                        save_chat_db(session_id, message, router_reply, needs_human)
+                        return router_reply, needs_human
+
+                elif action == "HANDOFF_CHECKOUT":
+                    checkout_reply, checkout_needs = handle_checkout(message, session_id)
+                    if checkout_reply:
+                        needs_human = checkout_needs
+                        checkout_reply = sanitize_reply(checkout_reply)
+                        save_chat_db(session_id, message, checkout_reply, needs_human)
+                        return checkout_reply, needs_human
+
+                elif action == "ASK_CLARIFYING_QUESTION":
+                    router_reply = clarifying_question or "Pode explicar melhor o que voce precisa?"
+                    router_reply = sanitize_reply(router_reply)
+                    save_chat_db(session_id, message, router_reply, needs_human)
+                    return router_reply, needs_human
+        # NOVO: investigacao consultiva progressiva (modo avancado)
         from app.flows.consultive_investigation import continue_investigation
-        investigation_reply = continue_investigation(session_id, message)
+        st_fresh = get_state(session_id)
+        if st_fresh.get("consultive_investigation") and not (
+            hint_check and is_generic_product(hint_check) and has_product_intent(message)
+        ):
+            investigation_reply = continue_investigation(session_id, message)
+        else:
+            investigation_reply = None
         if investigation_reply:
             investigation_reply = sanitize_reply(investigation_reply)
             save_chat_db(session_id, message, investigation_reply, needs_human)
             return investigation_reply, needs_human
 
-        # NOVO: resposta de contexto de uso (modo consultivo pré-venda)
-        usage_ctx_reply = handle_usage_context_response(session_id, message)
+        # NOVO: resposta de contexto de uso (modo consultivo pre-venda)
+        st_fresh = get_state(session_id)
+        if st_fresh.get("awaiting_usage_context") and not (
+            hint_check and is_generic_product(hint_check) and has_product_intent(message)
+        ):
+            usage_ctx_reply = handle_usage_context_response(session_id, message)
+        else:
+            usage_ctx_reply = None
         if usage_ctx_reply:
             usage_ctx_reply = sanitize_reply(usage_ctx_reply)
             save_chat_db(session_id, message, usage_ctx_reply, needs_human)
@@ -313,51 +791,68 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, reply, needs_human)
             return reply, needs_human
 
-        # NOVO: validação passiva de interesse (após recomendação consultiva)
+        # NOVO: validacao passiva de interesse (apos recomendacao consultiva)
         st = get_state(session_id)
         if st.get("consultive_recommendation_shown") and not st.get("last_suggestions"):
             t = norm(message)
 
-            # Sinal positivo → entra em modo de venda
+            # Sinal positivo - entra em modo de venda
             if any(w in t for w in ["sim", "faz", "sentido", "quero", "vou levar", "me interessa", "boa", "ok"]):
-                from app.product_search import db_find_best_products, format_options
-
                 hint = st.get("consultive_product_hint")
                 if hint:
-                    products = db_find_best_products(hint, k=6) or []
-
+                    summary = st.get("consultive_last_summary") or ""
+                    known_context = _build_known_context(
+                        st,
+                        st.get("consultive_catalog_constraints") or {},
+                    )
+                    catalog_result = _search_consultive_catalog(
+                        product_hint=hint,
+                        summary_text=summary,
+                        known_context=known_context,
+                        query_base=hint,
+                    )
+                    products = catalog_result.get("items") or []
                     if products:
-                        # Prepara sugestões para seleção
                         last_suggestions = []
                         for p in products:
                             pid = _safe_option_id(p)
                             if pid:
                                 last_suggestions.append({"id": pid, "nome": _safe_option_name(p)})
 
-                        patch_state(session_id, {
-                            "consultive_investigation": False,
-                            "consultive_recommendation_shown": False,
-                            "last_suggestions": last_suggestions,
-                            "last_hint": hint,
-                        })
+                        patch_state(
+                            session_id,
+                            {
+                                "consultive_investigation": False,
+                                "consultive_recommendation_shown": False,
+                                "last_suggestions": last_suggestions,
+                                "last_hint": hint,
+                            },
+                        )
 
-                        reply = f"Ótimo! Aqui estão as opções:\n\n{format_options(products)}\n\n"
-                        reply += "Qual você prefere? (responda 1, 2, 3... ou o nome)"
+                        warning = catalog_result.get("warning_text")
+                        header = "Otimo! Aqui estao as opcoes:\n\n"
+                        reply = ""
+                        if warning:
+                            reply += warning + "\n\n"
+                        reply += f"{header}{format_options(products)}\n\n"
+                        reply += "Qual voce prefere? (responda 1, 2, 3... ou o nome)"
                         reply = sanitize_reply(reply)
                         save_chat_db(session_id, message, reply, needs_human)
                         return reply, needs_human
 
-            # Sinal negativo → pede clarificação
-            elif any(w in t for w in ["nao", "não", "outro", "diferente"]):
-                patch_state(session_id, {
-                    "consultive_investigation": False,
-                    "consultive_recommendation_shown": False,
-                })
-                reply = "Sem problemas! Me diga mais sobre o que você precisa, que eu posso ajudar."
+            # Sinal negativo - pede clarificacao
+            elif any(w in t for w in ["nao", "outro", "diferente"]):
+                patch_state(
+                    session_id,
+                    {
+                        "consultive_investigation": False,
+                        "consultive_recommendation_shown": False,
+                    },
+                )
+                reply = "Sem problemas! Me diga mais sobre o que voce precisa, que eu posso ajudar."
                 reply = sanitize_reply(reply)
                 save_chat_db(session_id, message, reply, needs_human)
                 return reply, needs_human
-
         # escolha em sugestoes
         choice = handle_suggestions_choice(session_id, message)
         if choice:
@@ -367,12 +862,12 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
 
         # MODO CONSULTIVO - perguntas abertas antes de tentar vender
         if is_consultive_question(message):
-            # Verifica se há produto em contexto (última busca/sugestão)
+            # Verifica se hÃ¡ produto em contexto (Ãºltima busca/sugestÃ£o)
             st = get_state(session_id)
             context_product = None
             suggestions = st.get("suggestions", [])
             if suggestions:
-                # Pega o primeiro produto da última sugestão como contexto
+                # Pega o primeiro produto da Ãºltima sugestÃ£o como contexto
                 context_product = suggestions[0].get("nome") if suggestions else None
 
             consultive_reply, consultive_needs = answer_consultive_question(message, context_product)

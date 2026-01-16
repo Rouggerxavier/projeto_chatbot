@@ -6,9 +6,70 @@ Exemplos:
 - "Posso usar isso em área externa?"
 - "Qual é melhor pra banheiro?"
 """
-from typing import Tuple
+from typing import Tuple, List, Dict, Any
+from sqlalchemy.orm import Session
+
 from app.rag_products import search_products_semantic
-from app.text_utils import norm
+from app.text_utils import norm, BASE_PRODUCT_WORDS
+from app.product_search import format_options
+from database import SessionLocal, Produto
+
+
+def _extract_product_keyword(question: str) -> str:
+    t = norm(question)
+    if not t:
+        return ""
+    for tok in t.split():
+        if tok in BASE_PRODUCT_WORDS:
+            return tok
+    return ""
+
+
+def _sql_find_products_by_keyword(keyword: str, k: int = 6) -> List[Dict[str, Any]]:
+    db: Session = SessionLocal()
+    try:
+        q = (keyword or "").strip()
+        if len(q) < 2:
+            return []
+
+        rows = (
+            db.query(Produto)
+            .filter(Produto.ativo == True, Produto.nome.ilike(f"%{q}%"))  # noqa: E712
+            .limit(k)
+            .all()
+        )
+
+        out: List[Dict[str, Any]] = []
+        for p in rows:
+            out.append(
+                {
+                    "id_produto": int(p.id),
+                    "nome": p.nome,
+                    "unidade": (p.unidade or "UN").strip(),
+                    "preco": float(p.preco) if p.preco is not None else 0.0,
+                    "estoque": float(p.estoque_atual) if p.estoque_atual is not None else 0.0,
+                    "score": 0.80,
+                }
+            )
+        return out
+    finally:
+        db.close()
+
+
+def _is_type_question(question: str) -> bool:
+    t = norm(question)
+    return any(
+        phrase in t
+        for phrase in [
+            "que tipo",
+            "que tipos",
+            "quais tipos",
+            "tipos de",
+            "tem que tipo",
+            "tem tipos",
+            "tem tipo",
+        ]
+    )
 
 
 def answer_consultive_question(question: str, context_product: str = None) -> Tuple[str, bool]:
@@ -24,13 +85,24 @@ def answer_consultive_question(question: str, context_product: str = None) -> Tu
     """
     needs_human = False
 
+    product_keyword = _extract_product_keyword(question)
+
     # Extrai contexto da pergunta (produto mencionado)
     query = question
     if context_product:
         query = f"{context_product} {question}"
 
-    # Busca produtos relevantes no RAG (threshold baixo para perguntas)
-    products = search_products_semantic(query, k=3, min_relevance=0.25)
+    # Prioriza busca SQL ancorada no produto para evitar "alucinação" do RAG
+    products = _sql_find_products_by_keyword(product_keyword, k=6) if product_keyword else []
+    if not products:
+        # Busca produtos relevantes no RAG (threshold baixo para perguntas)
+        products = search_products_semantic(query, k=3, min_relevance=0.25)
+
+    # Filtro leve: se houve palavra-chave, mantém apenas itens que contenham a palavra no nome
+    if product_keyword and products:
+        filtered = [p for p in products if product_keyword in norm(p.get("nome", ""))]
+        if filtered:
+            products = filtered
 
     if not products:
         # Não encontrou nada relevante
@@ -39,6 +111,15 @@ def answer_consultive_question(question: str, context_product: str = None) -> Tu
             "Posso te ajudar a encontrar um produto? Me diga o que você precisa.",
             False
         )
+
+    # Resposta direta para "que tipos de X tem?"
+    if product_keyword and products and _is_type_question(question):
+        response = (
+            f"Temos estes tipos de **{product_keyword}** no catálogo:\n\n"
+            f"{format_options(products)}\n\n"
+            "Quer que eu te ajude a escolher e comprar?"
+        )
+        return response, needs_human
 
     # Analisa a pergunta
     q_norm = norm(question)

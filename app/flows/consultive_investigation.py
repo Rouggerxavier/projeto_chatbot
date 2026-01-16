@@ -18,6 +18,8 @@ Exemplo de fluxo:
 from typing import Optional, Dict, List, Callable, Any
 from app.session_state import get_state, patch_state
 from app.text_utils import norm
+from app.search_utils import extract_catalog_constraints_from_consultive
+from app.product_search import db_find_best_products_with_constraints
 
 
 # Fluxos de investigação por produto genérico
@@ -199,7 +201,6 @@ def continue_investigation(session_id: str, message: str) -> Optional[str]:
         return question_text
 
     # Investigação completa, gera recomendação técnica
-    from app.product_search import db_find_best_products
     from app.flows.technical_recommendations import get_technical_recommendation, format_recommendation_text
 
     patch_state(session_id, {
@@ -207,26 +208,7 @@ def continue_investigation(session_id: str, message: str) -> Optional[str]:
         "consultive_recommendation_shown": True,
     })
 
-    # Busca produtos
-    enriched_query = f"{product_hint} {application}"
-    products = db_find_best_products(enriched_query, k=6) or []
-
-    if not products:
-        # Tenta busca mais ampla
-        products = db_find_best_products(product_hint, k=6) or []
-
-    if not products:
-        # Não encontrou produtos
-        patch_state(session_id, {
-            "consultive_investigation": False,
-            "consultive_recommendation_shown": False,
-        })
-        return (
-            f"Hmm, não encontrei {product_hint} específico para {application} no catálogo agora.\n\n"
-            "Quer tentar outro produto ou posso te ajudar de outra forma?"
-        )
-
-    # Monta contexto para recomendação técnica
+    # Monta contexto para recomendacao tecnica
     st_fresh = get_state(session_id)  # Recarrega estado com as respostas coletadas
     context = {
         "product": product_hint,
@@ -239,9 +221,71 @@ def continue_investigation(session_id: str, message: str) -> Optional[str]:
         "size": st_fresh.get("consultive_size"),
     }
 
-    # Gera recomendação técnica
+    # Busca produtos com coerencia consultiva
+    enriched_query = f"{product_hint} {application}"
     rec = get_technical_recommendation(context)
-    reply = format_recommendation_text(rec, products, context=context)  # NOVO: passa contexto para síntese LLM
+    constraints = extract_catalog_constraints_from_consultive(
+        rec.get("reasoning", ""),
+        product_hint,
+        context,
+    )
+    category_hint = constraints.get("category_hint") or product_hint
+    must_terms = constraints.get("must_terms") or []
+    should_terms = constraints.get("should_terms") or []
+
+    patch_state(session_id, {
+        "consultive_last_summary": rec.get("reasoning", ""),
+        "consultive_catalog_constraints": constraints,
+    })
+
+    products = db_find_best_products_with_constraints(
+        enriched_query,
+        k=6,
+        category_hint=category_hint,
+        must_terms=must_terms,
+        strict=True,
+    )
+
+    unavailable_specs = []
+    if not products and must_terms:
+        unavailable_specs = list(must_terms)
+
+    if not products:
+        products = db_find_best_products_with_constraints(
+            enriched_query or product_hint,
+            k=6,
+            category_hint=category_hint,
+            should_terms=should_terms,
+            strict=False,
+        )
+
+    if not products:
+        products = db_find_best_products_with_constraints(
+            product_hint,
+            k=6,
+            category_hint=category_hint,
+            strict=False,
+        )
+
+    if not products:
+        # Nao encontrou produtos
+        patch_state(session_id, {
+            "consultive_investigation": False,
+            "consultive_recommendation_shown": False,
+        })
+        return (
+            f"Hmm, nao encontrei {product_hint} especifico para {application} no catalogo agora.\n\n"
+            "Quer tentar outro produto ou posso te ajudar de outra forma?"
+        )
+
+    reply = format_recommendation_text(rec, products, context=context)
+    if unavailable_specs:
+        spec_text = ", ".join(unavailable_specs).upper()
+        warning = (
+            f"Nao encontrei {spec_text} no catalogo agora, "
+            "mas posso sugerir opcoes disponiveis:\n\n"
+        )
+        reply = warning + reply
 
     return reply
 

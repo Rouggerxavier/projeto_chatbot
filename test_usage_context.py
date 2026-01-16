@@ -7,9 +7,6 @@ Execute: python test_usage_context.py
 import sys
 import io
 
-# Fix encoding para Windows
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-
 from app.flows.usage_context import is_generic_product
 from app.parsing import extract_product_hint
 
@@ -40,38 +37,47 @@ test_cases = [
     ("preciso de martelo", False, "martelo"),
 ]
 
-print("=" * 80)
-print("TESTE: MODO DE ESCLARECIMENTO DE USO (CONTEXTO PRE-VENDA)")
-print("=" * 80)
+def main() -> None:
+    # Fix encoding para Windows
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-passed = 0
-failed = 0
+    print("=" * 80)
+    print("TESTE: MODO DE ESCLARECIMENTO DE USO (CONTEXTO PRE-VENDA)")
+    print("=" * 80)
 
-for msg, expected_generic, expected_hint in test_cases:
-    hint = extract_product_hint(msg)
-    result_generic = is_generic_product(hint)
+    passed = 0
+    failed = 0
 
-    # Verifica se bateu com o esperado
-    hint_ok = hint == expected_hint
-    generic_ok = result_generic == expected_generic
+    for msg, expected_generic, expected_hint in test_cases:
+        hint = extract_product_hint(msg)
+        result_generic = is_generic_product(hint)
 
-    if hint_ok and generic_ok:
-        status = "[OK] PASS"
-        passed += 1
+        # Verifica se bateu com o esperado
+        hint_ok = hint == expected_hint
+        generic_ok = result_generic == expected_generic
+
+        if hint_ok and generic_ok:
+            status = "[OK] PASS"
+            passed += 1
+        else:
+            status = "[X] FAIL"
+            failed += 1
+
+        print(f"\n{status}")
+        print(f"  MSG: \"{msg}\"")
+        print(f"  Hint extraido: \"{hint}\" (esperado: \"{expected_hint}\")")
+        print(f"  E generico: {result_generic} (esperado: {expected_generic})")
+
+    print("\n" + "=" * 80)
+    print(f"RESULTADO: {passed} passou, {failed} falhou")
+    print("=" * 80)
+
+    if failed == 0:
+        print("[OK] Todos os testes passaram!")
     else:
-        status = "[X] FAIL"
-        failed += 1
+        print(f"[!] {failed} teste(s) falharam. Ajuste os padroes.")
 
-    print(f"\n{status}")
-    print(f"  MSG: \"{msg}\"")
-    print(f"  Hint extraido: \"{hint}\" (esperado: \"{expected_hint}\")")
-    print(f"  E generico: {result_generic} (esperado: {expected_generic})")
 
-print("\n" + "=" * 80)
-print(f"RESULTADO: {passed} passou, {failed} falhou")
-print("=" * 80)
-
-if failed == 0:
-    print("[OK] Todos os testes passaram!")
-else:
-    print(f"[!] {failed} teste(s) falharam. Ajuste os padroes.")
+if __name__ == "__main__":
+    main()
