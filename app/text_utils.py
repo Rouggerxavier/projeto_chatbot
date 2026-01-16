@@ -148,14 +148,79 @@ def _looks_like_preferences_only(t: str) -> bool:
     return False
 
 
+def is_consultive_question(message: str) -> bool:
+    """
+    Detecta se a mensagem é uma pergunta consultiva (ex: "serve pra laje?").
+
+    Retorna True se for pergunta aberta sobre produtos/aplicações.
+    Retorna False se for ação direta de compra ou preferência.
+    """
+    t = norm(message)
+
+    if not t:
+        return False
+
+    # Nunca é consultiva se for ação explícita de compra/carrinho/checkout
+    if is_greeting(message) or is_cart_show_request(message) or is_cart_reset_request(message):
+        return False
+
+    # Não é consultiva se for preferências isoladas
+    if _looks_like_preferences_only(t):
+        return False
+
+    # Não é consultiva se tiver intenção EXPLÍCITA de compra
+    if any(k in t for k in ["quero", "adiciona", "coloca", "vou levar", "me da", "preciso de"]):
+        return False
+
+    # Não é consultiva se tiver quantidade específica (ex: "2 sacos de cimento")
+    if QTY_UNITS_REGEX.search(t):
+        return False
+
+    # PATTERNS CONSULTIVOS (perguntas abertas)
+    consultive_patterns = [
+        # Perguntas sobre uso/aplicação
+        r"\b(serve|funciona|pode usar|posso usar|aplica|uso|usar)\b",
+        # Perguntas comparativas
+        r"\b(qual|melhor|diferenca|comparar|comparacao|escolher)\b",
+        # Perguntas sobre características
+        r"\b(e bom|e boa|e resistente|e duravel|qualidade|tipo)\b",
+        # Perguntas sobre adequação
+        r"\b(indicado|recomenda|adequado|ideal|apropriado)\b",
+        # Perguntas gerais
+        r"\b(como|onde|quando|porque|pra que|para que)\b",
+    ]
+
+    # Se tiver padrão consultivo + interrogação ou dúvida
+    has_consultive_pattern = any(re.search(pat, t) for pat in consultive_patterns)
+    has_question_marker = "?" in message or any(w in t for w in ["sera", "será", "talvez", "duvida"])
+
+    if has_consultive_pattern or has_question_marker:
+        # Confirma que tem alguma palavra relacionada a produto/construção
+        has_product_context = (
+            any(re.search(rf"\b{re.escape(w)}\b", t) for w in BASE_PRODUCT_WORDS) or
+            any(w in t for w in ["laje", "parede", "piso", "teto", "banheiro", "cozinha", "area externa", "obra"])
+        )
+
+        if has_product_context or has_consultive_pattern:
+            return True
+
+    return False
+
+
 def has_product_intent(message: str) -> bool:
     t = norm(message)
 
     if not t:
         return False
 
-    # Nunca considerar produto se for cumprimento/horário/carrinho
-    if is_greeting(message) or is_hours_question(message) or is_cart_show_request(message) or is_cart_reset_request(message):
+    # Nunca considerar produto se for cumprimento/horário
+    if is_greeting(message) or is_hours_question(message):
+        return False
+
+    # Carrinho: só rejeitar se for APENAS visualização/reset (sem adicionar produto)
+    if is_cart_reset_request(message):
+        return False
+    if is_cart_show_request(message) and not any(k in t for k in INTENT_KEYWORDS):
         return False
 
     # Preferências isoladas não são produto
@@ -165,6 +230,10 @@ def has_product_intent(message: str) -> bool:
     # Se for literalmente só palavras "não-produto" (ex.: "pix", "entrega", "ok")
     tokens = set(t.split())
     if tokens and tokens.issubset(NON_PRODUCT_WORDS):
+        return False
+
+    # Se for pergunta consultiva, NÃO é intenção de compra
+    if is_consultive_question(message):
         return False
 
     # Intenção explícita

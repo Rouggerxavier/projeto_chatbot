@@ -35,6 +35,7 @@ GREETINGS = {"bom dia", "boa tarde", "boa noite", "oi", "olá", "ola", "e ai", "
 INTENT_KEYWORDS = [
     "quero", "queria", "preciso", "gostaria", "tem", "vende", "vcs tem", "vocês tem",
     "quanto custa", "preço", "valor", "orçamento", "orcamento", "comprar", "pedido",
+    "adiciona", "coloca", "colocar", "pegar", "me da", "me dá", "vou levar",
 ]
 
 CART_SHOW_KEYWORDS = [

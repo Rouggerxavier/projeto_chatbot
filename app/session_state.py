@@ -25,6 +25,20 @@ DEFAULT_STATE: Dict[str, Any] = {
     "last_order_id": None,
     "last_order_summary": None,
     "last_order_total": None,
+
+    # contexto de uso (modo consultivo pré-venda)
+    "awaiting_usage_context": False,
+    "usage_context_product_hint": None,
+
+    # investigação consultiva progressiva (modo avançado)
+    "consultive_investigation": False,          # Flag: em investigação progressiva
+    "consultive_application": None,             # Aplicação informada (ex: "laje")
+    "consultive_environment": None,             # Ambiente (interna/externa)
+    "consultive_exposure": None,                # Exposição (coberto/exposto)
+    "consultive_load_type": None,               # Tipo de carga (residencial/pesado)
+    "consultive_investigation_step": 0,         # Passo atual (0-3)
+    "consultive_recommendation_shown": False,   # Flag: já mostrou recomendações
+    "consultive_product_hint": None,            # Produto sendo investigado
 }
 
 

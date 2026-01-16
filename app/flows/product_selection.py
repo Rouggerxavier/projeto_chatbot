@@ -12,8 +12,18 @@ def handle_suggestions_choice(session_id: str, message: str) -> Optional[str]:
     if not suggestions:
         return None
 
-    # parse_choice_indices retorna 1-based
+    # FASE 1: Tenta parse simples (fast path)
     indices_1based = parse_choice_indices(message, max_n=len(suggestions))
+
+    # FASE 2: Se falhou, usa LLM para interpretação semântica
+    if not indices_1based:
+        from app.llm_service import interpret_choice
+
+        choice_num = interpret_choice(message, suggestions)
+        if choice_num:
+            indices_1based = [choice_num]
+
+    # Se ainda não identificou, retorna None (não é escolha)
     if not indices_1based:
         return None
 

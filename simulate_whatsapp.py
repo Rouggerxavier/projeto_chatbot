@@ -1,6 +1,6 @@
 import requests
 
-url = "http://localhost:8000/webhook/whatsapp"
+url = "https://remunerative-avifaunal-delila.ngrok-free.dev/webhook/whatsapp"
 
 payload = {
     "object": "whatsapp_business_account",

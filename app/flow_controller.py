@@ -10,6 +10,7 @@ from app.text_utils import (
     is_cart_show_request,
     is_cart_reset_request,
     has_product_intent,
+    is_consultive_question,
     norm,
 )
 from app.persistence import save_chat_db
@@ -29,6 +30,7 @@ from app.checkout import handle_more_products_question
 from app.checkout_handlers.main import handle_checkout
 from app.session_state import get_state, patch_state
 from app.checkout_handlers.extractors import extract_email
+from app.consultive_mode import answer_consultive_question
 
 # Importa dos modulos flows/
 from app.flows.quantity import handle_pending_qty
@@ -39,6 +41,11 @@ from app.flows.removal import (
     handle_remove_qty,
 )
 from app.flows.product_selection import handle_suggestions_choice
+from app.flows.usage_context import (
+    is_generic_product,
+    ask_usage_context,
+    handle_usage_context_response,
+)
 
 
 def _safe_option_id(o: Any) -> Optional[int]:
@@ -145,6 +152,12 @@ def auto_suggest_products(message: str, session_id: str) -> Optional[str]:
     teach = _looks_like_bad_unit_request(message, hint)
     if teach:
         return teach
+
+    # NOVO: verifica se é produto genérico (precisa contexto de uso)
+    requested_kg = extract_kg_quantity(message)
+    if not requested_kg and is_generic_product(hint):
+        # Produto genérico sem quantidade -> pergunta contexto de uso
+        return ask_usage_context(session_id, hint)
 
     options = db_find_best_products(hint, k=6) or []
     if not options:
@@ -278,6 +291,21 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, pending, needs_human)
             return pending, needs_human
 
+        # NOVO: investigação consultiva progressiva (modo avançado)
+        from app.flows.consultive_investigation import continue_investigation
+        investigation_reply = continue_investigation(session_id, message)
+        if investigation_reply:
+            investigation_reply = sanitize_reply(investigation_reply)
+            save_chat_db(session_id, message, investigation_reply, needs_human)
+            return investigation_reply, needs_human
+
+        # NOVO: resposta de contexto de uso (modo consultivo pré-venda)
+        usage_ctx_reply = handle_usage_context_response(session_id, message)
+        if usage_ctx_reply:
+            usage_ctx_reply = sanitize_reply(usage_ctx_reply)
+            save_chat_db(session_id, message, usage_ctx_reply, needs_human)
+            return usage_ctx_reply, needs_human
+
         # prefs-only (entrega/pix/cep/bairro)
         if message_is_preferences_only(message, session_id):
             reply = reply_after_preference(session_id)
@@ -285,12 +313,73 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             save_chat_db(session_id, message, reply, needs_human)
             return reply, needs_human
 
+        # NOVO: validação passiva de interesse (após recomendação consultiva)
+        st = get_state(session_id)
+        if st.get("consultive_recommendation_shown") and not st.get("last_suggestions"):
+            t = norm(message)
+
+            # Sinal positivo → entra em modo de venda
+            if any(w in t for w in ["sim", "faz", "sentido", "quero", "vou levar", "me interessa", "boa", "ok"]):
+                from app.product_search import db_find_best_products, format_options
+
+                hint = st.get("consultive_product_hint")
+                if hint:
+                    products = db_find_best_products(hint, k=6) or []
+
+                    if products:
+                        # Prepara sugestões para seleção
+                        last_suggestions = []
+                        for p in products:
+                            pid = _safe_option_id(p)
+                            if pid:
+                                last_suggestions.append({"id": pid, "nome": _safe_option_name(p)})
+
+                        patch_state(session_id, {
+                            "consultive_investigation": False,
+                            "consultive_recommendation_shown": False,
+                            "last_suggestions": last_suggestions,
+                            "last_hint": hint,
+                        })
+
+                        reply = f"Ótimo! Aqui estão as opções:\n\n{format_options(products)}\n\n"
+                        reply += "Qual você prefere? (responda 1, 2, 3... ou o nome)"
+                        reply = sanitize_reply(reply)
+                        save_chat_db(session_id, message, reply, needs_human)
+                        return reply, needs_human
+
+            # Sinal negativo → pede clarificação
+            elif any(w in t for w in ["nao", "não", "outro", "diferente"]):
+                patch_state(session_id, {
+                    "consultive_investigation": False,
+                    "consultive_recommendation_shown": False,
+                })
+                reply = "Sem problemas! Me diga mais sobre o que você precisa, que eu posso ajudar."
+                reply = sanitize_reply(reply)
+                save_chat_db(session_id, message, reply, needs_human)
+                return reply, needs_human
+
         # escolha em sugestoes
         choice = handle_suggestions_choice(session_id, message)
         if choice:
             choice = sanitize_reply(choice)
             save_chat_db(session_id, message, choice, needs_human)
             return choice, needs_human
+
+        # MODO CONSULTIVO - perguntas abertas antes de tentar vender
+        if is_consultive_question(message):
+            # Verifica se há produto em contexto (última busca/sugestão)
+            st = get_state(session_id)
+            context_product = None
+            suggestions = st.get("suggestions", [])
+            if suggestions:
+                # Pega o primeiro produto da última sugestão como contexto
+                context_product = suggestions[0].get("nome") if suggestions else None
+
+            consultive_reply, consultive_needs = answer_consultive_question(message, context_product)
+            needs_human = consultive_needs
+            consultive_reply = sanitize_reply(consultive_reply)
+            save_chat_db(session_id, message, consultive_reply, needs_human)
+            return consultive_reply, needs_human
 
         # sugestao automatica
         suggested = auto_suggest_products(message, session_id)
