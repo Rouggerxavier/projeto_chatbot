@@ -238,6 +238,27 @@ class TestAskUsageContext:
         assert st["awaiting_usage_context"] is True
         assert st["usage_context_product_hint"] == "cimento"
 
+    def test_canonicalizes_generic_hint(self):
+        """Hint genérico deve ser canonicalizado no estado."""
+        from app.flows.usage_context import ask_usage_context
+        from app.session_state import get_state
+
+        session_id = "test_ask_usage_003"
+        ask_usage_context(session_id, "to precisando de cimento para uma obra")
+
+        st = get_state(session_id)
+        assert st["usage_context_product_hint"] == "cimento"
+
+
+class TestUsageContextParsing:
+    """Testes para extração de contexto em mensagens mistas."""
+
+    def test_extracts_known_context_from_mixed_message(self):
+        from app.flows.usage_context import extract_known_usage_context
+
+        msg = "eu falei que era para reboco o cimento"
+        assert extract_known_usage_context(msg) == "reboco"
+
 
 class TestFlowIntegration:
     """Testes de integração do fluxo completo."""

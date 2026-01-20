@@ -25,6 +25,7 @@ def _noop(*args, **kwargs):
 
 def test_router_show_catalog(monkeypatch):
     state = _base_state()
+    state["awaiting_usage_context"] = False
     called = {"route": 0}
 
     def _route_intent(message, state_summary):
@@ -44,18 +45,13 @@ def test_router_show_catalog(monkeypatch):
     monkeypatch.setattr(flow_controller, "maybe_render_customer_message", lambda *_: None)
     monkeypatch.setattr(flow_controller, "save_chat_db", _noop)
     monkeypatch.setattr(flow_controller, "list_orcamento_items", lambda _: [])
-    monkeypatch.setattr(
-        flow_controller,
-        "db_find_best_products",
-        lambda q, k=6: [
-            {"id": 1, "nome": "Cimento CP II", "preco": 30.0, "unidade": "UN", "estoque": 10, "score": 0.9}
-        ],
-    )
+    monkeypatch.setattr(flow_controller, "db_find_best_products", lambda *_: [])
+    monkeypatch.setattr(flow_controller, "ask_usage_context", lambda *_: "Qual uso?")
+    monkeypatch.setattr(flow_controller, "start_usage_context_flow", lambda *args, **kwargs: None)
 
     reply, _ = flow_controller.handle_message("vocês tem que tipo de cimento?", "s1")
     assert called["route"] == 1
-    assert "Cimento CP II" in reply
-    assert "Qual voce quer?" in reply
+    assert reply == "Qual uso?"
 
 
 def test_router_bypass_pending_selection(monkeypatch):
@@ -123,3 +119,23 @@ def test_router_answer_with_rag_without_context(monkeypatch):
 
     reply, _ = flow_controller.handle_message("qual o melhor cimento?", "s1")
     assert reply == "Qual uso?"
+
+
+def test_consultive_investigation_flow_uses_hint_check(monkeypatch):
+    state = _base_state()
+    state["consultive_investigation"] = True
+
+    monkeypatch.setattr(flow_controller, "get_state", lambda _: state)
+    monkeypatch.setattr(flow_controller, "save_chat_db", _noop)
+    monkeypatch.setattr(flow_controller, "list_orcamento_items", lambda *_: [])
+    monkeypatch.setattr(flow_controller, "maybe_render_customer_message", lambda *_: None)
+    monkeypatch.setattr(flow_controller, "_should_bypass_router", lambda *_: True)
+    monkeypatch.setattr(flow_controller, "extract_product_hint", lambda *_: "esmalte")
+    monkeypatch.setattr(flow_controller, "is_generic_product", lambda *_: False)
+    monkeypatch.setattr(
+        "app.flows.consultive_investigation.continue_investigation",
+        lambda *_: "investigacao ok",
+    )
+
+    reply, _ = flow_controller.handle_message("quero esmalte", "s1")
+    assert reply == "investigacao ok"

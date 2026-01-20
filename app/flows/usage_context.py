@@ -10,7 +10,7 @@ Exemplo:
     Bot: [explica + mostra catálogo filtrado]
 """
 from typing import Optional, Tuple, List, Any, Dict
-from app.session_state import get_state, patch_state
+from app.session_state import get_state, patch_state, reset_consultive_context
 from app.text_utils import norm
 from app.product_search import db_find_best_products, format_options
 from app.rag_products import search_products_semantic
@@ -96,6 +96,21 @@ def is_generic_product(hint: str) -> bool:
     return False
 
 
+def _canonicalize_generic_hint(hint: str) -> str:
+    """
+    Reduz hint para o produto genérico principal quando possível.
+    """
+    if not hint:
+        return hint
+
+    h = norm(hint)
+    for generic_key in GENERIC_PRODUCTS.keys():
+        if generic_key in h:
+            return generic_key
+
+    return hint
+
+
 def ask_usage_context(session_id: str, hint: str) -> str:
     """
     Pergunta contexto de uso para produto genérico.
@@ -107,7 +122,12 @@ def ask_usage_context(session_id: str, hint: str) -> str:
     Returns:
         Pergunta formatada
     """
+    # CRÍTICO: Limpa contexto consultivo anterior para evitar vazamento de dados
+    # Isso impede que contexto de conversas anteriores contamine a nova consulta
+    reset_consultive_context(session_id)
+
     h = norm(hint)
+    canonical_hint = _canonicalize_generic_hint(hint)
 
     # Encontra o produto genérico
     question = None
@@ -123,28 +143,19 @@ def ask_usage_context(session_id: str, hint: str) -> str:
     # Salva estado
     patch_state(session_id, {
         "awaiting_usage_context": True,
-        "usage_context_product_hint": hint,
+        "usage_context_product_hint": canonical_hint,
     })
 
     return question
 
 
-def _extract_usage_context(message: str) -> Optional[str]:
+def extract_known_usage_context(message: str) -> Optional[str]:
     """
-    Extrai contexto de uso da resposta do usuário.
-
-    Args:
-        message: Resposta do usuário
-
-    Returns:
-        Contexto identificado ou None
+    Extrai apenas contextos de uso reconhecidos.
     """
     t = norm(message)
-
-    # Remove palavras de ligação
     t = t.replace(" pra ", " ").replace(" para ", " ").replace(" em ", " ")
 
-    # Busca contextos conhecidos
     all_contexts = set()
     for config in GENERIC_PRODUCTS.values():
         all_contexts.update(config["contexts"].keys())
@@ -153,7 +164,29 @@ def _extract_usage_context(message: str) -> Optional[str]:
         if ctx in t:
             return ctx
 
-    # Se não achou contexto exato, retorna a mensagem limpa (uso genérico)
+    return None
+
+
+def _extract_usage_context(message: str) -> Optional[str]:
+    """
+    Extrai contexto de uso da resposta do usuario.
+
+    Args:
+        message: Resposta do usuario
+
+    Returns:
+        Contexto identificado ou None
+    """
+    t = norm(message)
+
+    # Remove palavras de ligacao
+    t = t.replace(" pra ", " ").replace(" para ", " ").replace(" em ", " ")
+
+    ctx = extract_known_usage_context(message)
+    if ctx:
+        return ctx
+
+    # Se nao achou contexto exato, retorna a mensagem limpa (uso generico)
     return t.strip()
 
 
@@ -240,45 +273,47 @@ def handle_usage_context_response(session_id: str, message: str) -> Optional[str
     usage_context = _extract_usage_context(message)
 
     if not usage_context:
-        # Não entendeu, pede novamente
-        return "Não entendi bem. Pode me dizer pra que você vai usar? (ex.: laje, reboco, parede externa...)"
+        # Nao entendeu, pede novamente
+        return "Nao entendi bem. Pode me dizer pra que voce vai usar? (ex.: laje, reboco, parede externa...)"
 
-    # NOVO: Inicia investigação progressiva em vez de mostrar produtos direto
+    return start_usage_context_flow(session_id, product_hint, usage_context)
+
+
+def start_usage_context_flow(session_id: str, product_hint: str, usage_context: str) -> Optional[str]:
+    """
+    Inicia fluxo consultivo quando produto e contexto ja sao conhecidos.
+    """
     from app.flows.consultive_investigation import start_investigation
+    from app.flows.technical_recommendations import get_technical_recommendation, format_recommendation_text
 
-    # Atualiza estado
+    # CRÍTICO: Limpa contexto consultivo anterior para evitar vazamento de dados
+    reset_consultive_context(session_id)
+
+    canonical_hint = _canonicalize_generic_hint(product_hint)
+
     patch_state(session_id, {
         "awaiting_usage_context": False,
         "usage_context_product_hint": None,
         "consultive_investigation": True,
         "consultive_application": usage_context,
-        "consultive_product_hint": product_hint,
+        "consultive_product_hint": canonical_hint,
         "consultive_investigation_step": 0,
     })
 
-    # Inicia investigação
-    investigation_reply = start_investigation(session_id, product_hint, usage_context)
+    investigation_reply = start_investigation(session_id, canonical_hint, usage_context)
 
     if investigation_reply:
-        # Há investigação a fazer
         return investigation_reply
 
-    # Sem investigação (produto não tem fluxo), mostra produtos direto
-    # Fallback para comportamento antigo
-    from app.flows.consultive_investigation import is_investigation_complete
-    from app.flows.technical_recommendations import get_technical_recommendation, format_recommendation_text
-
-    # Marca investigação como completa
     patch_state(session_id, {"consultive_recommendation_shown": True})
 
-    # Busca produtos
-    products = db_find_best_products(f"{product_hint} {usage_context}", k=6) or []
+    products = db_find_best_products(f"{canonical_hint} {usage_context}", k=6) or []
     if not products:
-        products = db_find_best_products(product_hint, k=6) or []
+        products = db_find_best_products(canonical_hint, k=6) or []
 
     if not products:
         reply = (
-            f"Hmm, não encontrei {product_hint} específico para {usage_context} no catálogo agora.\n\n"
+            f"Hmm, nao encontrei {canonical_hint} especifico para {usage_context} no catalogo agora.\n\n"
             "Quer tentar outro produto ou posso te ajudar de outra forma?"
         )
         patch_state(session_id, {
@@ -287,10 +322,9 @@ def handle_usage_context_response(session_id: str, message: str) -> Optional[str
         })
         return reply
 
-    # Busca recomendação técnica
     st = get_state(session_id)
     context = {
-        "product": product_hint,
+        "product": canonical_hint,
         "application": usage_context,
         "environment": st.get("consultive_environment"),
         "exposure": st.get("consultive_exposure"),
@@ -301,6 +335,6 @@ def handle_usage_context_response(session_id: str, message: str) -> Optional[str
     }
 
     rec = get_technical_recommendation(context)
-    reply = format_recommendation_text(rec, products, context=context)  # NOVO: passa contexto para síntese LLM
+    reply = format_recommendation_text(rec, products, context=context)
 
     return reply

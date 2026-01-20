@@ -174,9 +174,12 @@ def continue_investigation(session_id: str, message: str) -> Optional[str]:
         # Extrai resposta da mensagem
         answer = _extract_answer(message, options)
 
-        if answer:
-            # Salva resposta
-            patch_state(session_id, {field: answer})
+        if not answer:
+            question_text = current_question["question"].format(application=application or "")
+            return f"Nao entendi. {question_text}"
+
+        # Salva resposta
+        patch_state(session_id, {field: answer})
 
     # Avança para próximo passo
     next_step = current_step + 1
@@ -246,9 +249,9 @@ def continue_investigation(session_id: str, message: str) -> Optional[str]:
         strict=True,
     )
 
-    unavailable_specs = []
-    if not products and must_terms:
-        unavailable_specs = list(must_terms)
+    strict_failed = False
+    if not products:
+        strict_failed = True
 
     if not products:
         products = db_find_best_products_with_constraints(
@@ -276,6 +279,36 @@ def continue_investigation(session_id: str, message: str) -> Optional[str]:
         return (
             f"Hmm, nao encontrei {product_hint} especifico para {application} no catalogo agora.\n\n"
             "Quer tentar outro produto ou posso te ajudar de outra forma?"
+        )
+
+    # Se relaxou constraint, avisa apenas se termos obrigatorios continuam ausentes
+    unavailable_specs = []
+    if strict_failed and must_terms:
+        def _product_has_term(prod: Any, term: str) -> bool:
+            text = norm(f"{getattr(prod, 'nome', '')} {getattr(prod, 'descricao', '')} {prod.get('nome','') if isinstance(prod, dict) else ''} {prod.get('descricao','') if isinstance(prod, dict) else ''}")
+            return norm(term) in text
+
+        for term in must_terms:
+            if not any(_product_has_term(p, term) for p in products):
+                unavailable_specs.append(term)
+
+    # Armazena sugestoes para permitir escolha numerica/falada
+    last_suggestions: List[Dict[str, Any]] = []
+    for p in products:
+        pid = _safe_option_id(p)
+        if pid is None:
+            continue
+        last_suggestions.append({"id": pid, "nome": _safe_option_name(p)})
+
+    if last_suggestions:
+        patch_state(
+            session_id,
+            {
+                "last_suggestions": last_suggestions,
+                "last_hint": product_hint,
+                "last_requested_kg": None,
+                "consultive_investigation": False,  # encerra investigacao para permitir escolha numerica
+            },
         )
 
     reply = format_recommendation_text(rec, products, context=context)
@@ -350,4 +383,32 @@ def _extract_answer(message: str, options: List[str]) -> Optional[str]:
             return option
 
     # Não identificou, retorna mensagem limpa
-    return t.strip()
+    return None
+def _safe_option_id(o: Any) -> Optional[int]:
+    """
+    Aceita dicts com chaves diferentes (product_id / id / produto_id)
+    e tambem objetos ORM (p.id).
+    """
+    if o is None:
+        return None
+    if isinstance(o, dict):
+        pid = o.get("product_id")
+        if pid is None:
+            pid = o.get("id")
+        if pid is None:
+            pid = o.get("produto_id")
+        try:
+            return int(pid) if pid is not None else None
+        except Exception:
+            return None
+    pid = getattr(o, "id", None)
+    try:
+        return int(pid) if pid is not None else None
+    except Exception:
+        return None
+
+
+def _safe_option_name(o: Any) -> str:
+    if isinstance(o, dict):
+        return str(o.get("nome") or o.get("name") or "")
+    return str(getattr(o, "nome", "") or "")

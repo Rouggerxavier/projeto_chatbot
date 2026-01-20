@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal, Produto, CategoriaProduto
 from app.rag_products import search_products_semantic
+from app.text_utils import norm
 
 
 _GREETINGS = {
@@ -309,6 +310,23 @@ def parse_choice_indices(text: str, max_n: int = None, max_len: int = None) -> L
         return []
 
     nums = re.findall(r"\d+", text)
+
+    # Mapeia palavras para nÇ§meros (um/primeiro/dois/segundo/...)
+    t = norm(text)
+    tokens = t.split()
+    word_map = {
+        "um": 1, "uma": 1, "primeiro": 1, "primeira": 1,
+        "dois": 2, "duas": 2, "segundo": 2, "segunda": 2,
+        "tres": 3, "terceiro": 3, "terceira": 3,
+        "quatro": 4, "quarto": 4, "quarta": 4,
+        "cinco": 5, "quinto": 5, "quinta": 5,
+        "seis": 6, "sexto": 6, "sexta": 6,
+    }
+    for tok in tokens:
+        n = word_map.get(tok)
+        if n:
+            nums.append(str(n))
+
     out: List[int] = []
     for n in nums:
         i = int(n)

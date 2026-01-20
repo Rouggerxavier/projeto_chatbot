@@ -15,7 +15,7 @@ NON_HINT_WORDS = {
     "pedido", "orcamento", "orçamento",
 }
 
-INTENT_WORDS = ("quero", "queria", "preciso", "gostaria", "comprar", "pedido", "pedir")
+INTENT_WORDS = ("quero", "queria", "preciso", "precisando", "gostaria", "comprar", "pedido", "pedir", "to", "tô", "ta", "tá")
 
 # Remove quantidades com unidades (em qualquer parte da frase)
 QTY_ANYWHERE_RE = re.compile(
@@ -30,9 +30,11 @@ STOPWORDS = {
     "um", "uma", "uns", "umas",
     "tambem", "também",
     "ai", "aí", "por", "favor",
-    "quero", "queria", "preciso", "gostaria", "comprar", "pedido", "pedir",
+    "quero", "queria", "preciso", "precisando", "gostaria", "comprar", "pedido", "pedir",
     "no", "na", "nos", "nas",
     "com", "sem",
+    "to", "tô", "ta", "tá",
+    "obra",
 }
 
 

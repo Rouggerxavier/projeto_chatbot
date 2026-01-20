@@ -159,6 +159,11 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
     forma_pagamento_backup = st.get("forma_pagamento")
     cliente_email_backup = st.get("cliente_email")
     cliente_nome_backup = st.get("cliente_nome")
+    cliente_telefone_backup = st.get("cliente_telefone")
+    preferencia_entrega_backup = st.get("preferencia_entrega")
+    endereco_backup = st.get("endereco")
+    bairro_backup = st.get("bairro")
+    cep_backup = st.get("cep")
 
     # Todos os dados coletados - cria pedido
     pedido_id, err = create_pedido_from_orcamento(session_id)
@@ -192,12 +197,46 @@ def handle_checkout(message: str, session_id: str) -> Tuple[Optional[str], bool]
 
     print(f"🔍 DEBUG payment_block result (length={len(payment_block)}): {payment_block[:200] if payment_block else '(empty)'}")
 
+    nome_completo = (cliente_nome or "").strip() or "Cliente"
+    nome_parts = nome_completo.split()
+    sobrenome = " ".join(nome_parts[1:]).strip() if len(nome_parts) > 1 else ""
+    dados_cliente = [f"- Nome: {nome_completo}"]
+    if sobrenome:
+        dados_cliente.append(f"- Sobrenome: {sobrenome}")
+    if cliente_telefone_backup:
+        dados_cliente.append(f"- Telefone: {cliente_telefone_backup}")
+    if cliente_email:
+        dados_cliente.append(f"- Email: {cliente_email}")
+
+    loja_endereco = "Rua Argemiro de Figueiredo, 1091"
+    preferencia = (preferencia_entrega_backup or "").strip().lower()
+    if preferencia == "entrega":
+        endereco_partes = []
+        if endereco_backup:
+            endereco_partes.append(endereco_backup)
+        if bairro_backup:
+            endereco_partes.append(f"Bairro: {bairro_backup}")
+        if cep_backup:
+            endereco_partes.append(f"CEP: {cep_backup}")
+        endereco_formatado = " | ".join(endereco_partes) if endereco_partes else "endereco nao informado"
+        dados_cliente.append(f"- Entrega no endereco: {endereco_formatado}")
+    elif preferencia == "retirada":
+        dados_cliente.append(f"- Retirada na loja: {loja_endereco}")
+    else:
+        dados_cliente.append("- Entrega/retirada: nao informado")
+
+    cliente_info_block = ""
+    if dados_cliente:
+        cliente_info_block = "\n\nDados do cliente:\n" + "\n".join(dados_cliente)
+
     reply = (
         f"Pedido **#{pedido_id}** registrado e encaminhado para um atendente finalizar.\n\n"
         f"Resumo do pedido:\n{resumo}"
-        f"{payment_block}\n\n"
+        f"{payment_block}"
+        f"{cliente_info_block}\n\n"
         "Um atendente humano vai revisar e finalizar seu pedido agora.\n\n"
         "Obs.: esse orcamento foi **fechado** (por isso um novo orcamento pode ficar vazio). "
-        "Se quiser fazer um novo pedido, e so me dizer os itens."
+        "Se quiser fazer um novo pedido, e so me dizer os itens.\n"
+        "Obrigado por comprar no feirao da construcao, trabalhando sempre por voce."
     )
     return reply, True

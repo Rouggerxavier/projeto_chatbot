@@ -55,6 +55,8 @@ from app.flows.usage_context import (
     is_generic_product,
     ask_usage_context,
     handle_usage_context_response,
+    extract_known_usage_context,
+    start_usage_context_flow,
 )
 
 
@@ -165,6 +167,9 @@ def auto_suggest_products(message: str, session_id: str) -> Optional[str]:
 
     # NOVO: verifica se produto generico (precisa contexto de uso)
     if is_generic_product(hint):
+        known_ctx = extract_known_usage_context(message)
+        if known_ctx:
+            return start_usage_context_flow(session_id, hint, known_ctx)
         return ask_usage_context(session_id, hint)
 
     options = db_find_best_products(hint, k=6) or []
@@ -285,6 +290,25 @@ def _constraints_to_query(constraints: Dict[str, Any]) -> str:
         elif isinstance(v, list):
             parts.extend([str(x) for x in v if isinstance(x, (str, int, float))])
     return " ".join(parts).strip()
+
+
+def _gate_generic_usage(session_id: str, hint: str, message: str) -> Optional[Tuple[str, bool]]:
+    """
+    Se for produto genérico, aciona pergunta de uso ou inicia fluxo direto se já houver contexto.
+    Retorna (reply, needs_human) ou None para seguir fluxo normal.
+    """
+    if not hint or not is_generic_product(hint):
+        return None
+
+    known_ctx = extract_known_usage_context(message)
+    if known_ctx:
+        reply = start_usage_context_flow(session_id, hint, known_ctx)
+    else:
+        reply = ask_usage_context(session_id, hint)
+
+    if reply:
+        return sanitize_reply(reply), False
+    return None
 
 
 def _set_last_suggestions(session_id: str, options: List[Dict[str, Any]], hint: str) -> None:
@@ -664,6 +688,33 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                 save_chat_db(session_id, message, checkout_reply, needs_human)
                 return checkout_reply, needs_human
 
+        # GATE: produtos genericos sempre passam por contexto de uso antes de quantidades
+        if has_product_intent(message):
+            hint = extract_product_hint(message)
+            if hint and is_generic_product(hint):
+                st_generic = get_state(session_id)
+                if not st_generic.get("awaiting_usage_context") and not st_generic.get("consultive_investigation"):
+                    # limpa pendencias de escolha/quantidade antigas
+                    patch_state(
+                        session_id,
+                        {
+                            "pending_product_id": None,
+                            "awaiting_qty": False,
+                            "last_suggestions": [],
+                            "last_hint": None,
+                            "last_requested_kg": None,
+                        },
+                    )
+                    known_ctx = extract_known_usage_context(message)
+                    reply = (
+                        start_usage_context_flow(session_id, hint, known_ctx)
+                        if known_ctx
+                        else ask_usage_context(session_id, hint)
+                    )
+                    reply = sanitize_reply(reply)
+                    save_chat_db(session_id, message, reply, needs_human)
+                    return reply, needs_human
+
         # pending qty primeiro
         pending = handle_pending_qty(session_id, message)
         if pending:
@@ -692,14 +743,22 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                 ).strip()
 
                 if action == "SHOW_CATALOG":
-                    router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
+                    gated = _gate_generic_usage(session_id, category_hint or product_query or extract_product_hint(message), message)
+                    if gated:
+                        router_reply, needs_human = gated
+                    else:
+                        router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
                     if router_reply:
                         router_reply = sanitize_reply(router_reply)
                         save_chat_db(session_id, message, router_reply, needs_human)
                         return router_reply, needs_human
 
                 elif action == "SEARCH_PRODUCTS":
-                    router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
+                    gated = _gate_generic_usage(session_id, category_hint or product_query or extract_product_hint(message), message)
+                    if gated:
+                        router_reply, needs_human = gated
+                    else:
+                        router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
                     if router_reply:
                         router_reply = sanitize_reply(router_reply)
                         save_chat_db(session_id, message, router_reply, needs_human)
@@ -757,6 +816,8 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                     router_reply = sanitize_reply(router_reply)
                     save_chat_db(session_id, message, router_reply, needs_human)
                     return router_reply, needs_human
+        hint_check = extract_product_hint(message)
+
         # NOVO: investigacao consultiva progressiva (modo avancado)
         from app.flows.consultive_investigation import continue_investigation
         st_fresh = get_state(session_id)

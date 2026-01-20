@@ -194,19 +194,25 @@ def route_intent(message: str, state_summary: Dict[str, Any]) -> Optional[Dict[s
 
     prompt = f"""Voce e um roteador LLM para um chatbot de materiais de construcao.
 
-REGRAS IMPORTANTES:
-- NUNCA responda ao usuario, somente JSON valido.
-- NAO invente produtos.
-- NUNCA liste catalogo aqui. Apenas escolha a acao.
-- Se o usuario perguntar "que tipos voces tem / quais opcoes / tem X?", use:
-  intent=BROWSE_CATALOG e action=SHOW_CATALOG.
-- Se for recomendacao tecnica (ex: "qual melhor X para Y?"):
-  - Se faltarem dados criticos, use action=ASK_USAGE_CONTEXT e uma pergunta curta.
-  - Se ja houver contexto suficiente em state_summary, use action=ANSWER_WITH_RAG.
-- Se for checkout/pagamento/orcamento, use action=HANDOFF_CHECKOUT.
-- Se estiver incerto, use intent=UNKNOWN e action=ASK_CLARIFYING_QUESTION ou NOOP.
+REGRAS ABSOLUTAS:
+- NUNCA responda ao usuario, somente JSON valido
+- NAO invente produtos
+- NUNCA liste catalogo aqui
 
-RETORNE SOMENTE ESTE JSON (sem texto extra):
+REGRA CRITICA PARA PRODUTOS GENERICOS:
+- Se o usuario pedir cimento/tinta/areia/brita/argamassa SEM especificar uso/aplicacao:
+  - Use action=ASK_USAGE_CONTEXT (SEMPRE)
+  - Inclua clarifying_question perguntando o uso
+- So use ANSWER_WITH_RAG se state_summary.consultive_context_missing estiver VAZIO
+
+ROTEAMENTO:
+- "que tipos tem / quais opcoes / tem X?" -> BROWSE_CATALOG + SHOW_CATALOG
+- "quero X para Y" (com aplicacao) -> ASK_USAGE_CONTEXT (para coletar mais contexto)
+- "quero X" (generico, sem aplicacao) -> ASK_USAGE_CONTEXT
+- checkout/pagamento/orcamento -> HANDOFF_CHECKOUT
+- incerto -> ASK_CLARIFYING_QUESTION ou NOOP
+
+RETORNE SOMENTE ESTE JSON:
 {{
   "intent": "BROWSE_CATALOG|FIND_PRODUCT|TECHNICAL_QUESTION|ADD_TO_CART|REMOVE_ITEM|CHECKOUT|PAYMENT|ORDER_STATUS|SMALLTALK|UNKNOWN",
   "product_query": "string ou null",
@@ -277,19 +283,21 @@ def plan_consultive_next_step(
     prompt = f"""Voce e um planner consultivo para materiais de construcao.
 Seu trabalho e decidir o proximo passo com base na pergunta e contexto.
 
-REGRAS (ANTI-ALUCINACAO):
-- NUNCA liste produtos, catalogo, preco ou estoque.
-- NUNCA invente dados.
-- Responda SOMENTE com JSON valido.
-- Pergunte UMA pergunta curta por vez (no maximo 2 se indispensavel).
-- Priorize campos criticos primeiro (ex: aplicacao/uso).
-- Se a pergunta ja contem o contexto, nao repita.
-- Se for ambigua, use ASK_CLARIFYING_QUESTION com pergunta curta.
+REGRAS ABSOLUTAS:
+- NUNCA liste produtos, catalogo, preco ou estoque
+- NUNCA invente dados
+- Responda SOMENTE com JSON valido
+- Pergunte UMA pergunta curta por vez
 
-FOCO:
-- Descobrir: uso/aplicacao, ambiente, substrato/superficie, exposicao, umidade, carga, acabamento.
-- Se product_hint for generico (cimento, tinta, tijolo), pergunte primeiro aplicacao + ambiente.
-- Se known_context ja tiver application e environment, avance.
+REGRA CRITICA PARA READY_TO_ANSWER:
+- CIMENTO/ARGAMASSA: so use READY_TO_ANSWER se known_context tiver application E environment
+- TINTA: so use READY_TO_ANSWER se known_context tiver surface E environment
+- Se known_context estiver vazio ou incompleto, use ASK_CONTEXT com missing_fields
+
+CAMPOS OBRIGATORIOS POR PRODUTO:
+- cimento: application, environment (minimo)
+- tinta: surface, environment (minimo)
+- areia/brita: application (minimo)
 
 SCHEMA DE SAIDA:
 {{
@@ -622,33 +630,29 @@ def generate_technical_synthesis(
     context_text = "\n".join(context_items) if context_items else "Contexto não especificado"
     factors_text = ", ".join(technical_factors) if technical_factors else "fatores padrão"
 
-    prompt = f"""Você é um vendedor técnico especializado em materiais de construção. Fale como um vendedor experiente: direto, técnico mas acessível, sem enrolação.
+    prompt = f"""Voce e um vendedor tecnico de materiais de construcao. Seja direto e tecnico.
+
+REGRA ABSOLUTA - ANTI-ALUCINACAO:
+- Use APENAS as informacoes do CONTEXTO COLETADO abaixo
+- NUNCA invente ambiente, exposicao, carga ou qualquer dado nao listado
+- Se o contexto tiver apenas "Aplicacao", mencione APENAS a aplicacao
+- NAO copie os exemplos - eles sao apenas formato
 
 PRODUTO: {product_category}
 
-CONTEXTO COLETADO:
+CONTEXTO COLETADO (use SOMENTE isto):
 {context_text}
 
-FATORES TÉCNICOS RELEVANTES:
+FATORES TECNICOS:
 {factors_text}
 
 TAREFA:
-Gere UMA explicação técnica curta (2-3 frases CURTAS) que:
-1. Combine os principais fatores do contexto
-2. Explique POR QUE esse produto faz sentido para ESSE contexto específico
-3. Seja direto e objetivo - sem repetição ou enrolação
-4. Use linguagem técnica mas acessível
+Gere 2-3 frases curtas explicando por que esse produto faz sentido para o contexto EXATO acima.
 
 FORMATO:
-"Para [aplicação] em [ambiente/condições], o ideal é [tipo de produto] porque [razão técnica principal]. [Benefício específico]."
+"Para [aplicacao EXATA do contexto], o ideal e [tipo] porque [razao]. [Beneficio]."
 
-EXEMPLO CORRETO (cimento em laje externa exposta residencial):
-"Para laje externa exposta em área residencial, o ideal é cimento resistente a sulfatos e umidade, porque essas condições exigem maior durabilidade contra agentes agressivos. Isso garante uma estrutura segura e duradoura."
-
-EXEMPLO ERRADO (muito longo):
-"Para laje externa exposta em área residencial, o ideal é cimento com alta resistência a sulfatos, resistência mecânica elevada, durabilidade garantida, resistência à umidade e tempo de pega adequado, pois essas condições climáticas exigem maior proteção contra agentes agressivos do ambiente, além de uma boa trabalhabilidade para garantir uma aplicação eficaz e uma estrutura segura e duradoura..."
-
-Gere a explicação técnica (2-3 frases CURTAS):"""
+Gere a explicacao (2-3 frases, sem inventar dados):"""
 
     try:
         client = _get_groq_client()
