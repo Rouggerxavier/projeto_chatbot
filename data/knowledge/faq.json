@@ -1,0 +1,157 @@
+[
+  {
+    "id": "concreto_1_2_3_fck20",
+    "title": "Concreto comum traco 1:2:3 (cimento:areia:brita) com a/c 0,5",
+    "content": "Para concreto nao estrutural leve, um traco pratico e 1 parte de cimento : 2 partes de areia : 3 partes de brita, com fator agua/cimento em torno de 0,50. Referencia por massa: para cada 50 kg de cimento use ~100 kg de areia, ~150 kg de brita e ~25 L de agua. Para 200 kg de cimento, multiplique por 4: ~400 kg de areia, ~600 kg de brita e ~100 L de agua. Valores aproximados; ajuste agua pela trabalhabilidade."
+  },
+  {
+    "id": "argamassa_assentamento_1_3",
+    "title": "Argamassa de assentamento (tijolo/bloco) 1:3 cimento:areia",
+    "content": "Para assentamento de alvenaria o traco usual e 1 parte de cimento para 3 partes de areia media. Por massa: 1 kg de cimento para ~3 kg de areia. Para um saco de 50 kg de cimento, use cerca de 150 kg de areia e ~10 a 12 L de agua. Para 200 kg de cimento (4 sacos), use ~600 kg de areia e ~40 a 48 L de agua. Misture ate obter consistencia plastica, sem excesso de agua."
+  },
+  {
+    "id": "argamassa_reboco_1_4",
+    "title": "Argamassa de reboco 1:4 cimento:areia fina",
+    "content": "Reboco interno/externo costuma usar traco 1:4 (cimento:areia fina). Por massa: 1 kg de cimento para ~4 kg de areia. Para um saco de 50 kg de cimento, use ~200 kg de areia; para 200 kg de cimento, use ~800 kg de areia. Agua ate ponto de trabalhabilidade (cerca de 12 L por saco de 50 kg). Aplicar sobre emboco curado."
+  },
+  {
+    "id": "argamassa_contrapiso_1_3_traco_seco",
+    "title": "Contrapiso 1:3 traco mais seco (cimento:areia media)",
+    "content": "Para contrapiso, usa-se traco 1:3 com areia media, consistencia mais seca. Por massa: 50 kg cimento -> 150 kg areia -> ~12 L agua. Para 200 kg cimento -> ~600 kg areia -> ~48 L agua. Espalhe e compacte, depois desempenhe."
+  },
+  {
+    "id": "conversoes_basicas",
+    "title": "Conversoes praticas (m3, latas, kg)",
+    "content": "1 m3 de areia solta ~ 1.500 kg (varia conforme umidade e granulometria). Uma lata de 18 L tem ~0,018 m3; logo 1 m3 ~ 55 a 60 latas de 18 L. Para conversao rapida em tracos por lata: traco 1:2:3 com 1 saco de 50 kg (~1 lata de cimento) usa ~4 latas de areia e ~6 latas de brita; agua ~1/2 lata (ajuste no preparo). Use como referencia aproximada."
+  },
+  {
+    "id": "cimento_cp2_50kg_uso_geral",
+    "title": "Cimento CP II 50kg (uso geral: reboco, assentamento, contrapiso)",
+    "content": "CP II e um cimento composto para uso comum em obra do dia a dia. Serve para reboco/emboco, assentamento de tijolo/bloco e contrapiso/regularizacao. Argamassa: cimento + areia + agua (pode levar cal ou aditivo para mais trabalhabilidade). Concreto: cimento + areia + brita + agua (dosar corretamente). Comprar junto: areia fina ou media, brita se for concreto, agua limpa, balde/colher/desempenadeira. Evitar em ambientes muito agressivos (maresia, sulfatos, umidade extrema); para durabilidade maior, sugerir CP III. Se perguntarem rendimento, peca area (m2) e espessura (cm) para estimar. Cimento empedrado geralmente perdeu qualidade."
+  },
+  {
+    "id": "cimento_cp2_50kg_concreto",
+    "title": "Cimento CP II 50kg (foco concreto: laje, viga, sapata, piso)",
+    "content": "CP II tambem atende concreto comum para laje, baldrame, calcada, piso, viga e coluna, desde que o traco e a cura sejam corretos. Usar com areia media + brita 1 + agua. Perguntas obrigatorias: interno ou externo? Vai pegar chuva? E estrutural (laje/coluna) ou piso/calcada? Comprar junto: brita 1, areia media, possivel aditivo plastificante, lona para cura e ferramentas. Cura: manter umido nos primeiros dias reduz trinca e aumenta resistencia. Sugerir CP III se for externo exposto, maresia, umidade constante ou pedido de maior durabilidade."
+  },
+  {
+    "id": "cimento_branco_20kg",
+    "title": "Cimento branco 20kg (acabamento estetico)",
+    "content": "Cimento de cor branca para acabamentos aparentes: rejuntes especiais, argamassa branca, pecas decorativas, bancadas e pre-moldados claros. Usa-se com areia fina ou po de marmore e agua (dosagem depende do acabamento); pode receber pigmentos. Comprar junto: areia fina peneirada, pigmentos (opcional), desempenadeira, luvas. Pode ser usado como cimento comum, mas nao compensa para concreto estrutural. Pode amarelar ou manchar se a areia ou agua estiverem sujas ou se ficar exposto a sujeira/umidade sem protecao; avaliar selador quando necessario."
+  },
+  {
+    "id": "areia_media_1m3",
+    "title": "Areia media 1m3 (agregado intermediario)",
+    "content": "Areia de grao medio. Usos: concreto (com brita e cimento), emboco (camada antes do reboco fino) e assentamento em algumas situacoes. Comprar junto: cimento, brita se for concreto, agua limpa. Peneirar se houver impurezas; corrigir dosagem pela umidade (areia molhada engana no volume). Perguntas comuns: reboco fica melhor com fina; media da mais corpo para emboco. Ideal ter pouca argila/barro, pois impurezas reduzem resistencia."
+  },
+  {
+    "id": "areia_fina_1m3",
+    "title": "Areia fina 1m3 (acabamento mais liso)",
+    "content": "Areia de grao fino. Usos: reboco fino e acabamento liso, argamassa de assentamento mais trabalhavel em alguns casos, regularizacoes finas. Comprar junto: cimento (e cal ou aditivo se quiser mais trabalhabilidade). Duvida comum: areia fina sozinha nao causa trinca; trinca vem de argamassa muito rica em cimento ou agua e sem cura. Controlar dosagem e manter cura umida."
+  },
+  {
+    "id": "brita_1_1m3",
+    "title": "Brita 1 1m3 (agregado graudo para concreto)",
+    "content": "Brita 1 e pedra para concreto de laje, piso, viga, coluna, calcada e sapata. Usar com areia media + cimento + agua (traco adequado). Comprar junto: cimento, areia media, aditivo plastificante (opcional), lona para cura. Perguntas comuns: \"da para fazer concreto sem brita?\" Para laje/piso o padrao e usar brita; microconcreto e excecao. Cuidado: brita suja ou com barro reduz aderencia; ideal usar limpa ou lavar."
+  },
+  {
+    "id": "tijolo_8_furos",
+    "title": "Tijolo 8 furos (ceramico de vedacao)",
+    "content": "Tijolo ceramico de vedacao, nao estrutural, usado para paredes internas/externas. Usos: levantar paredes de vedacao e divisorias. Assentado com argamassa (cimento + areia + agua; pode levar cal). Comprar junto: cimento, areia fina ou media conforme traco, massa para assentamento, nivel/trena. Perguntas comuns: aguenta peso? Em geral e vedacao; cargas estruturais pedem bloco estrutural/projeto. 6 ou 8 furos? 8 furos e comum para vedacao; escolha depende de espessura, isolamento e custo."
+  },
+  {
+    "id": "tijolo_6_furos",
+    "title": "Tijolo 6 furos (ceramico de vedacao)",
+    "content": "Tijolo ceramico de vedacao, outra variacao comum para paredes de vedacao, reformas e pequenas obras. Assentado com argamassa (cimento + areia). Comprar junto: cimento, areia, ferramentas. Pergunta comum: faz muita sujeira? Corte ceramico gera po; sugerir EPI e serra adequada."
+  },
+  {
+    "id": "bloco_concreto_14x19x39",
+    "title": "Bloco de concreto 14x19x39",
+    "content": "Bloco de concreto para paredes, muros e fechamentos; pode ser vedacao ou estrutural dependendo da resistencia. Assentado com argamassa; em alvenaria estrutural precisa de projeto, graute, ferragens e blocos adequados. Comprar junto: cimento, areia, prumo/nivel; se estrutural: graute, ferragem, canaletas. Perguntas comuns: isola melhor que tijolo? Produtividade e resistencia costumam ser boas; isolamento depende do sistema e revestimento. Pode ficar aparente? Pode, mas requer acabamento/selador conforme exposicao."
+  },
+  {
+    "id": "tinta_acrilica_fosca_interior_18l",
+    "title": "Tinta acrilica fosca interior 18L",
+    "content": "Tinta base agua para paredes internas com acabamento fosco (disfarca imperfeicoes). Usos: salas, quartos, tetos, areas internas secas. Como usar: preparar superficie (limpar, tirar mofo, corrigir buracos), aplicar selador/fundo quando necessario, diluir conforme fabricante e aplicar 2 a 3 demos. Comprar junto: rolo, bandeja, fita, massa corrida se precisar nivelar, lixa, selador acrilico. Pergunta comum: da para lavar? Fosco marca mais e tem menor lavabilidade que semibrilho; para paredes que sujam muito, sugerir semibrilho."
+  },
+  {
+    "id": "tinta_acrilica_semibrilho_exterior_18l",
+    "title": "Tinta acrilica semibrilho exterior 18L",
+    "content": "Tinta acrilica para areas externas com acabamento semibrilho, mais resistencia e facilidade de limpeza. Usos: fachadas, muros, areas com sol e chuva. Como usar: preparacao e critica (selador, correcao de trincas, fundo apropriado), aplicar conforme fabricante. Comprar junto: selador/fundo para exterior, massa acrilica (melhor que massa corrida em externo), rolos, lixas. Perguntas comuns: serve para banheiro/cozinha? Sim, e mais lavavel que fosco; mas precisa tratar mofo/umidade. Descasca com chuva? Se ha umidade por tras ou falta preparo, pode descascar; investigar infiltracao antes de pintar."
+  },
+  {
+    "id": "massa_corrida_25kg",
+    "title": "Massa corrida 25kg (PVA para interior)",
+    "content": "Massa para nivelar paredes internas antes da pintura. Usos: corrigir imperfeicoes e deixar liso para tinta. Aplicar em camadas finas, secar, lixar, remover po, selar e pintar. Comprar junto: lixa, desempenadeira/espatula, selador acrilico, tinta. Perguntas comuns: pode usar no exterior? Em geral nao; para exterior usar massa acrilica. Pode passar direto e pintar? Recomendado selar antes para uniformizar absorcao."
+  },
+  {
+    "id": "cano_pvc_3_4_6m",
+    "title": "Cano PVC 3/4\" 6m (agua fria comum)",
+    "content": "Tubo PVC para agua fria (classe/pressao depende do modelo). Usos: ramais de torneira, distribuicao em residencias. Como usar: cortar, lixar rebarba, limpar, colar com adesivo apropriado (soldavel) ou usar conexoes adequadas. Comprar junto: joelhos, tes, luvas, adesivo PVC, lixa, fita veda rosca se houver rosca. Perguntas comuns: serve para agua quente? PVC comum nao; para quente usar CPVC/PPR conforme sistema. Bitola para chuveiro? Muitos usam 3/4\" para vazao, mas depende do projeto/pressao."
+  },
+  {
+    "id": "cano_pvc_1_6m",
+    "title": "Cano PVC 1\" 6m (agua fria maior vazao)",
+    "content": "Tubo PVC 1\" para agua fria quando se precisa de mais vazao (alimentacao principal ou ramais maiores). Usos: entrada de agua, distribuicao principal, pontos que exigem vazao. Comprar junto: conexoes 1\", registro compativel, cola, lixa. Pergunta comum: 1\" e melhor que 3/4\"? So se precisar de vazao maior; usar bitola maior sem necessidade aumenta custo e dificulta instalacao."
+  },
+  {
+    "id": "joelho_90_3_4",
+    "title": "Joelho 90 graus 3/4\"",
+    "content": "Conexao para mudar direcao da tubulacao em 90 graus. Usos: curvas em instalacoes hidraulicas. Como usar: encaixar e colar (soldavel) ou rosquear se for roscavel, conforme modelo. Comprar junto: cola PVC se soldavel, tubos 3/4\", lixa, limpador. Pergunta comum: vaza muito em curva? Vaza se colagem ou encaixe estiver ruim; respeitar tempo de cura da cola."
+  },
+  {
+    "id": "registro_esfera_3_4",
+    "title": "Registro esfera 3/4\"",
+    "content": "Valvula para abrir/fechar fluxo de agua com alavanca (rapido e confiavel). Usos: desligar agua de setor (banheiro, cozinha, jardim). Como usar: instalar no sentido correto, vedar rosca com fita veda rosca quando aplicavel, testar pressao. Comprar junto: fita veda rosca, adaptadores, tubo/conexoes compativeis. Pergunta comum: esfera ou gaveta? Esfera abre/fecha facil e veda bem; gaveta e comum em registro geral, depende do uso."
+  },
+  {
+    "id": "cabo_flexivel_2_5mm_100m",
+    "title": "Cabo flexivel 2,5mm 100m",
+    "content": "Cabo eletrico flexivel 2,5 mm², comum para tomadas e circuitos gerais. Usos: tomadas 10A/20A (depende do circuito), em alguns casos iluminacao (muitos usam 1,5 mm² para iluminacao; varia por norma/projeto). Resposta segura: dimensionamento depende de disjuntor, distancia, carga e norma; perguntar se e para tomada ou iluminacao, qual disjuntor e quais equipamentos. Comprar junto: disjuntor correto, conduite, caixas, conectores, fita isolante, tomadas. Cuidados: instalacao eletrica deve seguir norma e idealmente eletricista."
+  },
+  {
+    "id": "cabo_flexivel_4mm_100m",
+    "title": "Cabo flexivel 4mm 100m",
+    "content": "Cabo eletrico flexivel 4 mm² para circuitos de maior carga (ar condicionado, forno, alguns chuveiros dependendo da potencia/tensao). Uso depende de carga (W), tensao (127/220), disjuntor e distancia. Comprar junto: disjuntor compativel, conduite adequado, terminais/conectores. Pergunta comum: 4mm serve para chuveiro? Depende da potencia e tensao; pedir esses dados antes de responder."
+  },
+  {
+    "id": "disjuntor_bipolar_40a",
+    "title": "Disjuntor bipolar 40A",
+    "content": "Disjuntor para circuito 220V (fase-fase ou fase+neutro, conforme sistema) com corrente nominal 40A. Usos: proteger circuito de carga maior (chuveiro, forno, ar condicionado, conforme projeto). Instalar em quadro, dimensionado junto com bitola do cabo e carga. Comprar junto: cabos com bitola compativel, barramentos, quadro, trilho DIN se aplicavel. Pergunta comum: posso subir a corrente para nao desarmar? Nao recomendado; o disjuntor protege o cabo. Se desarma, pode ser sobrecarga ou dimensionamento errado."
+  },
+  {
+    "id": "tomada_10a_branca",
+    "title": "Tomada 10A branca",
+    "content": "Tomada padrao para cargas leves/medias. Usos: TV, carregadores, eletronicos, pequenos eletros (nao para equipamentos de alta potencia que pedem 20A ou linha dedicada). Como usar: instalar em caixa 4x2 com cabo adequado e disjuntor correto. Comprar junto: caixa 4x2, espelho se nao incluso, cabos, conectores. Pergunta comum: pode ligar micro-ondas/airfryer? Depende da potencia; muitos pedem 20A e circuito dedicado."
+  },
+  {
+    "id": "marreta_1kg_cabo_madeira",
+    "title": "Marreta 1kg cabo de madeira",
+    "content": "Ferramenta de impacto para demolicao leve e assentamento/ajuste. Usos: quebrar alvenaria leve, ajustar pecas, bater em talhadeira. Como usar: sempre com oculos/luvas, golpes controlados. Comprar junto: talhadeira, EPI (oculos, luvas). Pergunta comum: 1kg da conta? Para demolicao pesada pode precisar maior; para obra domestica 1kg e versatil."
+  },
+  {
+    "id": "colher_pedreiro_10",
+    "title": "Colher de pedreiro 10\"",
+    "content": "Ferramenta para aplicar e manipular argamassa. Usos: assentamento de tijolos/blocos, aplicacao de argamassa, pequenos rebocos. Como usar: carregar argamassa, puxar e espalhar. Comprar junto: balde, desempenadeira, nivel/prumo."
+  },
+  {
+    "id": "desempenadeira_aco",
+    "title": "Desempenadeira de aco",
+    "content": "Ferramenta para espalhar e nivelar massa/argamassa (acabamento). Usos: aplicar massa corrida, massa acrilica, reboco fino, cimentado. Como usar: movimentos uniformes, camadas finas para evitar ondulacao. Comprar junto: lixas para massa, espatula, bandeja."
+  },
+  {
+    "id": "trena_5m",
+    "title": "Trena 5m",
+    "content": "Fita metrica para medições. Usos: medir ambientes, cortes de cano, paginacao de piso, conferir prumo/nivel em conjunto. Como usar: travar, medir, anotar; em obra, conferir mais de uma vez. Comprar junto: lapis de obra/marcacao, nivel."
+  },
+  {
+    "id": "cimento_cp3_50kg",
+    "title": "Cimento CP III 50kg (maior durabilidade/ambiente agressivo)",
+    "content": "Cimento com maior teor de escoria e menor calor de hidratacao, indicado para durabilidade em ambientes umidos/agressivos. Usos: laje/piso externo exposto a sol e chuva, areas com maresia ou alta umidade. Serve para reboco/assentamento, mas o diferencial e durabilidade. Como usar: igual ao cimento comum (com areia/brita/agua), reforcando cura e impermeabilizacao/caimento em area externa. Comprar junto: areia, brita se concreto, aditivo impermeabilizante (se aplicavel), lona para cura, tinta/selador conforme projeto. Cuidados: nao resolve infiltracao sozinho; se ha agua parada, precisa caimento, ralos e impermeabilizacao."
+  },
+  {
+    "id": "regras_rapidas_contexto_rendimento",
+    "title": "Regras rapidas de contexto e rendimento (perguntar antes de recomendar)",
+    "content": "Sempre perguntar 2 coisas antes de recomendar para cimento/areia/brita/tinta: 1) Onde vai usar? (interno ou externo, pega chuva/sol, area molhada?) 2) Qual aplicacao? (assentar, rebocar, concreto/laje, pintura nova ou repintura; em eletrica, qual carga/uso). Quando o cliente perguntar quanto rende, solicitar: area em m2 e espessura em cm, ou numero de fiadas/metros de parede, e se e acabamento fino ou grosso."
+  }
+]

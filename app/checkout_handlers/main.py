@@ -11,7 +11,7 @@ from .extractors import (
     extract_name,
     extract_email,
 )
-from .validators import is_finalize_intent, ready_to_checkout
+from .validators import is_finalize_intent
 from .order_creation import create_pedido_from_orcamento
 from .payment_handling import generate_payment_block
 

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from app.mercadopago_payments import _validate_email, create_pix_payment, create_checkout_preference
+from app.mercadopago_payments import _validate_email, create_checkout_preference
 
 
 def generate_payment_block(

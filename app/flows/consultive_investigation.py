@@ -15,7 +15,7 @@ Exemplo de fluxo:
     User: "residencial"
     Bot: [recomendação técnica com explicação + produtos]
 """
-from typing import Optional, Dict, List, Callable, Any
+from typing import Optional, Dict, List, Any
 from app.session_state import get_state, patch_state
 from app.text_utils import norm
 from app.search_utils import extract_catalog_constraints_from_consultive

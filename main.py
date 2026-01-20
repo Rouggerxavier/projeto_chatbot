@@ -5,6 +5,7 @@ from database import init_db
 from app.api_routes import router
 from app.whatsapp_webhook import router as whatsapp_router
 from app.rag_products import rebuild_product_index
+from app.rag_knowledge import rebuild_knowledge_index
 
 
 @asynccontextmanager
@@ -23,6 +24,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         # não derruba o servidor se embeddings/chroma falharem
         print("[WARN] rebuild_product_index falhou:", e)
+    try:
+        rebuild_knowledge_index()
+    except Exception as e:
+        print("[WARN] rebuild_knowledge_index falhou:", e)
     yield
 
 

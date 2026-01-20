@@ -29,7 +29,6 @@ STOPWORDS = {
     "tambem", "também", "tb"
 }
 
-UNITS_WORDS = {"kg", "quilo", "quilos", "saco", "sacos", "un", "unidade", "unidades", "m", "metro", "metros"}
 
 GREETINGS = {"bom dia", "boa tarde", "boa noite", "oi", "olá", "ola", "e ai", "eai", "fala", "tudo bem"}
 INTENT_KEYWORDS = [

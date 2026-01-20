@@ -274,34 +274,6 @@ def search_products(query: str, k: int = 6, min_score: float = 0.15) -> List[Dic
     return results
 
 
-def format_rag_options(items: List[Dict[str, Any]]) -> str:
-    """
-    Formata as opções encontradas (para o chatbot mostrar).
-    """
-    if not items:
-        return "Não encontrei nada parecido no catálogo."
-
-    lines = []
-    for i, it in enumerate(items, start=1):
-        nome = it.get("nome", "—")
-        preco = it.get("preco", 0.0)
-        unidade = it.get("unidade", "UN")
-        estoque = it.get("estoque", 0.0)
-
-        try:
-            preco_f = float(preco)
-        except Exception:
-            preco_f = 0.0
-
-        try:
-            estoque_f = float(estoque)
-        except Exception:
-            estoque_f = 0.0
-
-        lines.append(f"{i}) {nome} — R$ {preco_f:.2f}/{unidade} — estoque {estoque_f:.0f}")
-
-    return "\n".join(lines)
-
 def search_products_semantic(query: str, k: int = 6, min_relevance: float = None, min_score: float = None) -> List[Dict[str, Any]]:
     """Compatibilidade com chamadas antigas (min_relevance) e novas (min_score)."""
     if min_score is None:

@@ -100,17 +100,6 @@ def extract_name(message: str) -> Optional[str]:
     return _clean_candidate(raw)
 
 
-def split_first_last(full_name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    if not full_name:
-        return None, None
-    parts = full_name.strip().split()
-    if not parts:
-        return None, None
-    first = parts[0]
-    last = parts[-1] if len(parts) > 1 else None
-    return first, last
-
-
 def extract_email(message: str) -> Optional[str]:
     """Extrai email valido da mensagem e normaliza para lowercase."""
     t = message or ""

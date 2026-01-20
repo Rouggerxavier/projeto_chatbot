@@ -190,60 +190,6 @@ def _extract_usage_context(message: str) -> Optional[str]:
     return t.strip()
 
 
-def _build_consultive_reply(product_hint: str, usage_context: str, products: List[Any]) -> str:
-    """
-    Constrói resposta consultiva baseada no contexto de uso.
-
-    Args:
-        product_hint: Produto solicitado
-        usage_context: Contexto de uso informado
-        products: Lista de produtos encontrados
-
-    Returns:
-        Resposta formatada
-    """
-    ph = norm(product_hint)
-    uc = norm(usage_context)
-
-    # Mapeamento de recomendações
-    recommendations = {
-        ("cimento", "laje"): "Para laje, recomendo **cimento CP II ou CP III**, que têm boa resistência estrutural.",
-        ("cimento", "fundacao"): "Para fundação, o ideal é **cimento CP III ou CP IV**, mais resistentes a sulfatos.",
-        ("cimento", "reboco"): "Para reboco, **cimento CP II** é a melhor escolha, tem boa trabalhabilidade.",
-        ("cimento", "piso"): "Para contrapiso, **cimento CP II** funciona bem.",
-        ("cimento", "area externa"): "Para área externa, use **cimento CP III ou CP IV**, resistem melhor à umidade.",
-
-        ("tinta", "parede interna"): "Para parede interna, **tinta látex ou acrílica** são ideais.",
-        ("tinta", "parede externa"): "Para externa, prefira **tinta acrílica ou textura**, resistem ao tempo.",
-        ("tinta", "madeira"): "Para madeira, **esmalte ou verniz** protegem melhor.",
-        ("tinta", "metal"): "Para metal, use **esmalte sintético** ou **zarcão** (base).",
-
-        ("areia", "reboco"): "Para reboco, **areia fina ou média** dão melhor acabamento.",
-        ("areia", "assentamento"): "Para assentar tijolo/bloco, **areia média** é a indicada.",
-        ("areia", "concreto"): "Para concreto, **areia média ou grossa** funcionam bem.",
-
-        ("brita", "concreto"): "Para concreto, **brita 1 ou 2** são as mais usadas.",
-        ("brita", "drenagem"): "Para drenagem, **brita 3 ou 4** facilitam o escoamento.",
-    }
-
-    # Busca recomendação
-    recommendation = None
-    for (prod_key, context_key), rec_text in recommendations.items():
-        if prod_key in ph and context_key in uc:
-            recommendation = rec_text
-            break
-
-    # Fallback genérico
-    if not recommendation:
-        recommendation = f"Para {usage_context}, aqui estão as melhores opções:"
-
-    reply = f"{recommendation}\n\n"
-    reply += f"{format_options(products)}\n\n"
-    reply += "Qual você prefere? (responda 1, 2, 3... ou o nome)"
-
-    return reply
-
-
 def handle_usage_context_response(session_id: str, message: str) -> Optional[str]:
     """
     Processa resposta de contexto de uso.

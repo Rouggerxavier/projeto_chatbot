@@ -41,6 +41,7 @@ from app.llm_service import (
 )
 from app.flows.technical_recommendations import can_generate_technical_answer
 from app.search_utils import extract_catalog_constraints_from_consultive
+from app.rag_knowledge import format_knowledge_answer
 
 # Importa dos modulos flows/
 from app.flows.quantity import handle_pending_qty
@@ -728,6 +729,7 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             state_summary = _build_state_summary(session_id, st_router)
             route = route_intent(message, state_summary)
             if route:
+                intent = route.get("intent")
                 action = route.get("action")
                 product_query = route.get("product_query") or ""
                 category_hint = route.get("category_hint") or ""
@@ -788,6 +790,13 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
 
                 elif action == "ANSWER_WITH_RAG":
                     hint = category_hint or product_query or st_router.get("consultive_product_hint") or st_router.get("last_hint")
+                    if intent == "TECHNICAL_QUESTION":
+                        knowledge_reply = format_knowledge_answer(message, hint)
+                        if knowledge_reply:
+                            router_reply = knowledge_reply
+                            router_reply = sanitize_reply(router_reply)
+                            save_chat_db(session_id, message, router_reply, needs_human)
+                            return router_reply, needs_human
                     planned = _handle_consultive_planner(
                         session_id=session_id,
                         message=message,
