@@ -152,3 +152,45 @@ def test_planner_invalid_json_fallback(monkeypatch):
 
     reply, _ = flow_controller.handle_message("quero cimento", "s1")
     assert reply == "Qual uso?"
+
+
+def test_planner_low_confidence_clarify(monkeypatch):
+    state = _base_state()
+    monkeypatch.setattr(flow_controller.settings, "PLANNER_CONFIDENCE_THRESHOLD", 0.70)
+    monkeypatch.setattr(flow_controller.settings, "LLM_HARD_BLOCK_THRESHOLD", 0.40)
+
+    def _route_intent(message, state_summary):
+        return {
+            "intent": "TECHNICAL_QUESTION",
+            "product_query": "cimento",
+            "category_hint": "cimento",
+            "constraints": {},
+            "action": "ASK_USAGE_CONTEXT",
+            "clarifying_question": None,
+            "confidence": 0.90,
+        }
+
+    def _plan_low_conf(*args, **kwargs):
+        return {
+            "missing_fields": ["environment"],
+            "next_action": "ASK_CONTEXT",
+            "next_question": "Vai usar em area interna ou externa?",
+            "assumptions": [],
+            "confidence": 0.30,
+        }
+
+    def _patch_state(_, updates):
+        state.update(updates)
+
+    monkeypatch.setattr(flow_controller, "get_state", lambda _: state)
+    monkeypatch.setattr(flow_controller, "route_intent", _route_intent)
+    monkeypatch.setattr(flow_controller, "plan_consultive_next_step", _plan_low_conf)
+    monkeypatch.setattr(flow_controller, "save_chat_db", lambda *_: None)
+    monkeypatch.setattr(flow_controller, "list_orcamento_items", lambda *_: [])
+    monkeypatch.setattr(flow_controller, "patch_state", _patch_state)
+    monkeypatch.setattr(flow_controller, "ask_usage_context", lambda *_: "Qual uso?")
+    monkeypatch.setattr(flow_controller, "start_usage_context_flow", lambda *_: None)
+    monkeypatch.setattr(flow_controller, "is_generic_product", lambda *_: False)
+
+    reply, _ = flow_controller.handle_message("quero cimento", "s1")
+    assert "area interna ou externa" in reply.lower()

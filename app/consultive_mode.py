@@ -173,14 +173,23 @@ def _answer_comparison_question(products, question):
         preco1, preco2 = p1.get("preco", 0.0), p2.get("preco", 0.0)
 
         diferenca = ""
-        if preco1 > preco2 * 1.2:
-            diferenca = f"{n1} tem um custo maior que {n2}."
-        elif preco2 > preco1 * 1.2:
-            diferenca = f"{n2} tem um custo maior que {n1}."
-        else:
-            diferenca = f"Ambos têm preços similares."
+        try:
+            p1_ok = float(preco1) > 0
+            p2_ok = float(preco2) > 0
+        except Exception:
+            p1_ok = p2_ok = False
 
-        return f"Temos {n1} e {n2} disponíveis. {diferenca} Qual você prefere?"
+        if p1_ok and p2_ok:
+            if preco1 > preco2 * 1.2:
+                diferenca = f"{n1} tem um custo maior que {n2}."
+            elif preco2 > preco1 * 1.2:
+                diferenca = f"{n2} tem um custo maior que {n1}."
+            else:
+                diferenca = f"Ambos têm preços similares."
+
+        if diferenca:
+            return f"Temos {n1} e {n2} disponíveis. {diferenca} Qual você prefere?"
+        return f"Temos {n1} e {n2} disponíveis. Qual deles parece atender melhor o que você precisa?"
     else:
         return "Temos esse produto disponível. Me diga mais sobre o que você precisa para te ajudar melhor."
 

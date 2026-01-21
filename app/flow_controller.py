@@ -1,5 +1,6 @@
 import re
 import traceback
+import logging
 from typing import Optional, Tuple, Any, Dict, List
 
 from app.constants import HORARIO_LOJA
@@ -42,6 +43,12 @@ from app.llm_service import (
 from app.flows.technical_recommendations import can_generate_technical_answer
 from app.search_utils import extract_catalog_constraints_from_consultive
 from app.rag_knowledge import format_knowledge_answer
+from app.session_state import (
+    get_pending_prompt,
+    push_pending_prompt,
+    pop_pending_prompt,
+    set_pending_prompt,
+)
 
 # Importa dos modulos flows/
 from app.flows.quantity import handle_pending_qty
@@ -58,6 +65,14 @@ from app.flows.usage_context import (
     handle_usage_context_response,
     extract_known_usage_context,
     start_usage_context_flow,
+)
+from app import settings
+
+logger = logging.getLogger(__name__)
+
+_ROUTER_CLARIFY_MSG = (
+    "Preciso confirmar: voce quer ver opcoes de produtos (orcamento) ou prefere uma recomendacao tecnica? "
+    "Responda 1 para produtos ou 2 para recomendacao."
 )
 
 
@@ -89,6 +104,58 @@ def _safe_option_name(o: Any) -> str:
     if isinstance(o, dict):
         return str(o.get("nome") or o.get("name") or "")
     return str(getattr(o, "nome", "") or "")
+
+
+def _detect_interrupt(message: str) -> bool:
+    t = norm(message)
+    if "?" in message:
+        return True
+    starters = ["voce", "voc", "tem", "vende", "quanto", "qual", "como", "pode", "sera", "será"]
+    return any(t.startswith(s) for s in starters)
+
+
+def _matches_expected_kind(message: str, prompt: Dict[str, Any]) -> bool:
+    kind = (prompt or {}).get("expected_kind") or ""
+    meta = (prompt or {}).get("metadata") or {}
+    t = norm(message)
+    if not t:
+        return False
+    if kind == "yes_no":
+        return t in {"sim", "s", "nao", "não", "n"}
+    if kind == "number_choice":
+        import re as _re
+        if not _re.fullmatch(r"\d+", t):
+            return False
+        val = int(t)
+        limit = meta.get("max_option") or meta.get("options_len")
+        if limit:
+            return 1 <= val <= int(limit)
+        return True
+    if kind == "quantity":
+        from app.parsing import extract_units_quantity, extract_plain_number, extract_kg_quantity
+        return any(v is not None for v in [extract_units_quantity(message), extract_plain_number(message), extract_kg_quantity(message)])
+    if kind == "free_text":
+        return True
+    return False
+
+
+def _resume_previous_prompt(session_id: str, faq_reply: str, pending: Dict[str, Any]) -> str:
+    resume_text = pending.get("text") or "Podemos continuar?"
+    set_pending_prompt(session_id, pending)
+    return f"{faq_reply}\n\nVoltando ao que estavamos: {resume_text}"
+
+
+def resolve_faq_or_product_query(message: str) -> Optional[str]:
+    hint = extract_product_hint(message)
+    if hint:
+        options = db_find_best_products(hint, k=3) or []
+        if options:
+            names = ", ".join([o.get("nome", "") for o in options[:3] if o.get("nome")])
+            return f"Temos opcoes relacionadas a {hint}: {names}.\nQuer que eu siga com um orcamento ou uma recomendacao tecnica?"
+    faq = format_knowledge_answer(message, hint)
+    if faq:
+        return faq
+    return "Posso ajudar com isso. Quer detalhes de produtos ou uma recomendacao tecnica?"
 
 
 def _looks_like_bad_unit_request(message: str, hint: str) -> Optional[str]:
@@ -312,13 +379,16 @@ def _gate_generic_usage(session_id: str, hint: str, message: str) -> Optional[Tu
     return None
 
 
-def _set_last_suggestions(session_id: str, options: List[Dict[str, Any]], hint: str) -> None:
+def _set_last_suggestions(session_id: str, options: List[Dict[str, Any]], hint: str, context: Optional[Dict[str, Any]] = None) -> None:
     last_suggestions: List[Dict[str, Any]] = []
     for o in options:
         pid = _safe_option_id(o)
         if pid is None:
             continue
-        last_suggestions.append({"id": pid, "nome": _safe_option_name(o)})
+        entry = {"id": pid, "nome": _safe_option_name(o)}
+        if context:
+            entry["context"] = context
+        last_suggestions.append(entry)
     patch_state(
         session_id,
         {
@@ -329,7 +399,7 @@ def _set_last_suggestions(session_id: str, options: List[Dict[str, Any]], hint: 
     )
 
 
-def _catalog_reply_for_query(session_id: str, query: str, clarifying_question: Optional[str]) -> Optional[str]:
+def _catalog_reply_for_query(session_id: str, query: str, clarifying_question: Optional[str], category_hint: Optional[str] = None) -> Optional[str]:
     if not query:
         return clarifying_question or "Qual produto voce procura?"
 
@@ -337,7 +407,10 @@ def _catalog_reply_for_query(session_id: str, query: str, clarifying_question: O
     if not options:
         return clarifying_question or "Nao encontrei esse produto. Qual voce procura?"
 
-    _set_last_suggestions(session_id, options, query)
+    context_payload = {"query": query}
+    if category_hint:
+        context_payload["hint"] = category_hint
+    _set_last_suggestions(session_id, options, query, context=context_payload)
     facts_items = []
     for o in options:
         facts_items.append(
@@ -538,6 +611,21 @@ def _handle_consultive_planner(
     state_summary = _build_state_summary(session_id, st)
     known_context = _build_known_context(st, constraints)
     plan = plan_consultive_next_step(message, state_summary, product_hint, known_context)
+    if plan:
+        plan_conf = float(plan.get("confidence", 0.0) or 0.0)
+        if plan_conf < settings.LLM_HARD_BLOCK_THRESHOLD or plan_conf < settings.PLANNER_CONFIDENCE_THRESHOLD:
+            missing_fields = plan.get("missing_fields") or []
+            field = missing_fields[0] if missing_fields else None
+            question = plan.get("next_question") or _question_for_field(product_hint, field or "application")
+            _apply_asked_context_fields(session_id, st, field or "application")
+            logger.info(
+                "llm_low_confidence_fallback component=planner confidence=%.2f threshold=%.2f session=%s type=%s",
+                plan_conf,
+                settings.PLANNER_CONFIDENCE_THRESHOLD,
+                session_id,
+                "clarify",
+            )
+            return question, False
     if not plan:
         if fallback_to_usage and product_hint:
             reply = ask_usage_context(session_id, product_hint)
@@ -617,6 +705,29 @@ def _handle_consultive_planner(
 def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
     needs_human = False
     try:
+        # Pending prompt handling with interruption support
+        st_initial = get_state(session_id)
+        pending_prompt = get_pending_prompt(session_id)
+        if pending_prompt:
+            if _matches_expected_kind(message, pending_prompt):
+                set_pending_prompt(session_id, None)
+                st_initial = get_state(session_id)
+            else:
+                if _detect_interrupt(message):
+                    push_pending_prompt(session_id, pending_prompt)
+                    set_pending_prompt(session_id, None)
+                    faq_reply = resolve_faq_or_product_query(message) or "Posso ajudar com isso."
+                    resumed = pop_pending_prompt(session_id) or pending_prompt
+                    reply = _resume_previous_prompt(session_id, faq_reply, resumed)
+                    reply = sanitize_reply(reply)
+                    save_chat_db(session_id, message, reply, needs_human)
+                    return reply, needs_human
+                else:
+                    reply = pending_prompt.get("text") or "Pode responder?"
+                    reply = sanitize_reply(reply)
+                    save_chat_db(session_id, message, reply, needs_human)
+                    return reply, needs_human
+
         if is_greeting(message):
             reply = "Bom dia! Como posso ajudar? (ex.: cimento, areia, trena, etc.)"
             reply = sanitize_reply(reply)
@@ -729,6 +840,20 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
             state_summary = _build_state_summary(session_id, st_router)
             route = route_intent(message, state_summary)
             if route:
+                route_conf = float(route.get("confidence", 0.0) or 0.0)
+                if route_conf < settings.LLM_HARD_BLOCK_THRESHOLD or route_conf < settings.ROUTER_CONFIDENCE_THRESHOLD:
+                    router_reply = route.get("clarifying_question") or _ROUTER_CLARIFY_MSG
+                    logger.info(
+                        "llm_low_confidence_fallback component=router confidence=%.2f threshold=%.2f session=%s type=%s",
+                        route_conf,
+                        settings.ROUTER_CONFIDENCE_THRESHOLD,
+                        session_id,
+                        "clarify",
+                    )
+                    router_reply = sanitize_reply(router_reply)
+                    save_chat_db(session_id, message, router_reply, needs_human)
+                    return router_reply, needs_human
+
                 intent = route.get("intent")
                 action = route.get("action")
                 product_query = route.get("product_query") or ""
@@ -749,7 +874,7 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                     if gated:
                         router_reply, needs_human = gated
                     else:
-                        router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
+                        router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question, category_hint)
                     if router_reply:
                         router_reply = sanitize_reply(router_reply)
                         save_chat_db(session_id, message, router_reply, needs_human)
@@ -760,7 +885,7 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                     if gated:
                         router_reply, needs_human = gated
                     else:
-                        router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question)
+                        router_reply = _catalog_reply_for_query(session_id, search_query, clarifying_question, category_hint)
                     if router_reply:
                         router_reply = sanitize_reply(router_reply)
                         save_chat_db(session_id, message, router_reply, needs_human)

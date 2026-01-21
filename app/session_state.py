@@ -44,6 +44,10 @@ DEFAULT_STATE: Dict[str, Any] = {
     "last_consultive_question_key": None,
     "consultive_last_summary": None,
     "consultive_catalog_constraints": {},
+
+    # prompts pendentes e interrupcoes
+    "pending_prompt": None,
+    "state_stack": [],
 }
 
 
@@ -133,3 +137,30 @@ def reset_consultive_context(user_id: str) -> None:
         "consultive_catalog_constraints": {},
     }
     patch_state(user_id, consultive_fields)
+
+
+def get_pending_prompt(user_id: str) -> Any:
+    st = get_state(user_id)
+    return st.get("pending_prompt")
+
+
+def set_pending_prompt(user_id: str, prompt: Any) -> None:
+    patch_state(user_id, {"pending_prompt": prompt})
+
+
+def push_pending_prompt(user_id: str, prompt: Any) -> None:
+    st = get_state(user_id)
+    stack = list(st.get("state_stack") or [])
+    stack.append(prompt)
+    patch_state(user_id, {"state_stack": stack})
+
+
+def pop_pending_prompt(user_id: str) -> Any:
+    st = get_state(user_id)
+    stack = list(st.get("state_stack") or [])
+    if not stack:
+        patch_state(user_id, {"state_stack": []})
+        return None
+    prompt = stack.pop()
+    patch_state(user_id, {"state_stack": stack})
+    return prompt

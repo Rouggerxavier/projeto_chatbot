@@ -103,18 +103,17 @@ def _validate_route_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
     intent = payload.get("intent")
     action = payload.get("action")
-    confidence = payload.get("confidence")
+    confidence_raw = payload.get("confidence", 0.0)
 
     if intent not in _ROUTER_INTENTS:
         return None
     if action not in _ROUTER_ACTIONS:
         return None
     try:
-        confidence_val = float(confidence)
+        confidence_val = float(confidence_raw)
     except Exception:
-        return None
-    if confidence_val < 0.0 or confidence_val > 1.0:
-        return None
+        confidence_val = 0.0
+    confidence_val = max(0.0, min(1.0, confidence_val))
 
     product_query = payload.get("product_query", None)
     category_hint = payload.get("category_hint", None)
@@ -140,6 +139,8 @@ def _validate_route_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
         "action": action,
         "clarifying_question": clarifying_question,
         "confidence": confidence_val,
+        "decision": intent,
+        "reasons": payload.get("reasons"),
     }
 
 
@@ -148,16 +149,15 @@ def _validate_consultive_plan(payload: Dict[str, Any]) -> Optional[Dict[str, Any
         return None
 
     next_action = payload.get("next_action")
-    confidence = payload.get("confidence")
+    confidence_raw = payload.get("confidence", 0.0)
 
     if next_action not in _CONSULTIVE_ACTIONS:
         return None
     try:
-        confidence_val = float(confidence)
+        confidence_val = float(confidence_raw)
     except Exception:
-        return None
-    if confidence_val < 0.0 or confidence_val > 1.0:
-        return None
+        confidence_val = 0.0
+    confidence_val = max(0.0, min(1.0, confidence_val))
 
     missing_fields = payload.get("missing_fields", [])
     next_question = payload.get("next_question", None)
@@ -180,6 +180,8 @@ def _validate_consultive_plan(payload: Dict[str, Any]) -> Optional[Dict[str, Any
         "next_question": next_question,
         "assumptions": assumptions,
         "confidence": confidence_val,
+        "decision": next_action,
+        "reasons": payload.get("reasons"),
     }
 
 
@@ -605,10 +607,16 @@ def generate_technical_synthesis(
         print(f"[BLOCK] generate_technical_synthesis BLOQUEADA pelo gate. Produto: {product_category}, Contexto: {context}")
         return ""
 
-    # Validação básica adicional: pelo menos "application" deve estar presente
-    if not context.get("application"):
-        print(f"[WARN] generate_technical_synthesis chamada sem 'application' no contexto. Produto: {product_category}")
-        return ""
+    # Validação mínima: para tinta, aceitar surface+environment; demais exigem application
+    prod_l = product_category.lower()
+    if "tinta" in prod_l:
+        if not context.get("surface") or not context.get("environment"):
+            print(f"[WARN] generate_technical_synthesis tinta sem surface/environment. Produto: {product_category}")
+            return ""
+    else:
+        if not context.get("application"):
+            print(f"[WARN] generate_technical_synthesis chamada sem 'application' no contexto. Produto: {product_category}")
+            return ""
 
     # Monta contexto legível
     context_items = []

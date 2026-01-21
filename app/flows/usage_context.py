@@ -222,7 +222,32 @@ def handle_usage_context_response(session_id: str, message: str) -> Optional[str
         # Nao entendeu, pede novamente
         return "Nao entendi bem. Pode me dizer pra que voce vai usar? (ex.: laje, reboco, parede externa...)"
 
-    return start_usage_context_flow(session_id, product_hint, usage_context)
+    reply = start_usage_context_flow(session_id, product_hint, usage_context)
+    if reply:
+        return reply
+    return "Pode me dizer pra que voce vai usar? (ex.: laje, reboco, parede externa...)"
+
+
+def _safe_option_id(o: Any) -> Optional[int]:
+    if o is None:
+        return None
+    if isinstance(o, dict):
+        pid = o.get("id") or o.get("product_id") or o.get("produto_id")
+        try:
+            return int(pid) if pid is not None else None
+        except Exception:
+            return None
+    pid = getattr(o, "id", None)
+    try:
+        return int(pid) if pid is not None else None
+    except Exception:
+        return None
+
+
+def _safe_option_name(o: Any) -> str:
+    if isinstance(o, dict):
+        return str(o.get("nome") or o.get("name") or "")
+    return str(getattr(o, "nome", "") or "")
 
 
 def start_usage_context_flow(session_id: str, product_hint: str, usage_context: str) -> Optional[str]:
@@ -267,6 +292,29 @@ def start_usage_context_flow(session_id: str, product_hint: str, usage_context: 
             "consultive_recommendation_shown": False,
         })
         return reply
+
+    # Persistir sugestoes numeradas para permitir selecao por numero
+    suggestions = []
+    for p in products:
+        pid = _safe_option_id(p)
+        if pid:
+            suggestions.append(
+                {
+                    "id": pid,
+                    "nome": _safe_option_name(p),
+                    "context": {"usage_context": usage_context, "product_hint": canonical_hint},
+                }
+            )
+    if suggestions:
+        patch_state(
+            session_id,
+            {
+                "last_suggestions": suggestions,
+                "last_hint": canonical_hint,
+                "last_requested_kg": None,
+                "consultive_investigation": False,
+            },
+        )
 
     st = get_state(session_id)
     context = {

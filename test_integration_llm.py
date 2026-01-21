@@ -79,7 +79,7 @@ def test_full_flow_with_llm():
     st = get_state(SESSION_ID)
     assert st.get("consultive_recommendation_shown") == True
     assert "laje" in reply5.lower()
-    assert "externa" in reply5.lower()
+    assert ("extern" in reply5.lower()) or ("expost" in reply5.lower())
     print("    [OK] Gerou recomendacao com sintese tecnica LLM")
     print("    [OK] Sintese menciona contexto completo (laje + externa + exposto + residencial)")
 

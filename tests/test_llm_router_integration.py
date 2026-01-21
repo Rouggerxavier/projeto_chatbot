@@ -139,3 +139,34 @@ def test_consultive_investigation_flow_uses_hint_check(monkeypatch):
 
     reply, _ = flow_controller.handle_message("quero esmalte", "s1")
     assert reply == "investigacao ok"
+
+
+def test_router_low_confidence_returns_clarify(monkeypatch):
+    state = _base_state()
+    monkeypatch.setattr(flow_controller.settings, "ROUTER_CONFIDENCE_THRESHOLD", 0.65)
+    monkeypatch.setattr(flow_controller.settings, "LLM_HARD_BLOCK_THRESHOLD", 0.40)
+
+    def _route_intent(message, state_summary):
+        return {
+            "intent": "BROWSE_CATALOG",
+            "product_query": "cimento",
+            "category_hint": "cimento",
+            "constraints": {},
+            "action": "SHOW_CATALOG",
+            "clarifying_question": None,
+            "confidence": 0.20,
+        }
+
+    def _raise_if_called(*args, **kwargs):
+        raise AssertionError("catalog/search should not run on low confidence")
+
+    monkeypatch.setattr(flow_controller, "get_state", lambda _: state)
+    monkeypatch.setattr(flow_controller, "route_intent", _route_intent)
+    monkeypatch.setattr(flow_controller, "save_chat_db", _noop)
+    monkeypatch.setattr(flow_controller, "db_find_best_products", _raise_if_called)
+    monkeypatch.setattr(flow_controller, "maybe_render_customer_message", lambda *_: None)
+    monkeypatch.setattr(flow_controller, "ask_usage_context", _raise_if_called)
+    monkeypatch.setattr(flow_controller, "start_usage_context_flow", _raise_if_called)
+
+    reply, _ = flow_controller.handle_message("vocǦs tem que tipo de cimento?", "s1")
+    assert "Preciso confirmar" in reply

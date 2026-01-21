@@ -283,8 +283,7 @@ def format_options(options: List[Dict[str, Any]]) -> str:
         nome = o.get("nome", "")
         preco = float(o.get("preco", 0.0) or 0.0)
         unidade = o.get("unidade", "UN") or "UN"
-        estoque = o.get("estoque", 0) or 0
-        lines.append(f"{idx}) {nome} — R$ {preco:.2f}/{unidade} — estoque {estoque:.0f}")
+        lines.append(f"{idx}) {nome} — R$ {preco:.2f}/{unidade}")
     return "\n".join(lines)
 
 
