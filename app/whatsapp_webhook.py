@@ -17,9 +17,8 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # CONFIGURATION
 # -----------------------------------------------------------------------------
-# Define your Verify Token here (must match the token configured in Meta Dashboard)
-# In production, load from environment variable
-VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "meuTokenSecreto123")
+# Load from environment variable (no default in code)
+VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 router = APIRouter(prefix="/webhook", tags=["whatsapp"])
 
@@ -46,12 +45,15 @@ async def verify_webhook(request: Request):
     challenge = request.query_params.get("hub.challenge")
 
     logger.info(
-        "Webhook verification: mode=%s, token=%s, challenge=%s, VERIFY_TOKEN=%s",
+        "Webhook verification: mode=%s token_provided=%s challenge_provided=%s",
         mode,
-        token,
-        challenge,
-        VERIFY_TOKEN,
+        bool(token),
+        bool(challenge),
     )
+
+    if not VERIFY_TOKEN:
+        logger.error("WHATSAPP_VERIFY_TOKEN nao configurado no ambiente")
+        raise HTTPException(status_code=500, detail="WHATSAPP_VERIFY_TOKEN nao configurado")
 
     if not all([mode, token, challenge]):
         logger.warning("Missing required parameters for webhook verification")
@@ -61,7 +63,8 @@ async def verify_webhook(request: Request):
         logger.info("Webhook verified successfully")
         return Response(content=challenge, media_type="text/plain")
 
-    logger.warning("Webhook verification failed: mode=%s, token=%s", mode, token)
+    # Invalid token or mode
+    logger.warning("Webhook verification failed: mode=%s token_provided=%s", mode, bool(token))
     raise HTTPException(status_code=403, detail="Forbidden")
 
 
@@ -206,11 +209,12 @@ def send_whatsapp_reply(to: str, message: str) -> dict:
         },
     }
 
+    # Log request details without leaking secrets
     logger.info("Sending WhatsApp message")
     logger.info("   URL: %s", url)
     logger.info("   TO: %s", to_clean)
     logger.info("   MSG: %s...", message[:100])
-    logger.info("   TOKEN (last 10): ...%s", access_token[-10:])
+    logger.info("   TOKEN: [redacted]")
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)

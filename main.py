@@ -1,11 +1,14 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from dotenv import load_dotenv
 
 from database import init_db
 from app.api_routes import router
 from app.whatsapp_webhook import router as whatsapp_router
 from app.rag_products import rebuild_product_index
 from app.rag_knowledge import rebuild_knowledge_index
+
+load_dotenv()
 
 
 @asynccontextmanager

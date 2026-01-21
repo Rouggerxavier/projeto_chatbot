@@ -42,7 +42,7 @@ def _auth_headers() -> Dict[str, str]:
     token = _get_env("MP_ACCESS_TOKEN").strip().strip('"').strip("'")
     if not token or len(token) < 20:
         raise RuntimeError(f"MP_ACCESS_TOKEN invalido (comprimento={len(token)})")
-    print(f"[MP] Token (primeiros 20 chars): {token[:20]}...")
+    print("[MP] Token carregado (redigido)")
     return {"Authorization": f"Bearer {token}"}
 
 
