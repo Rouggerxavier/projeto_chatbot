@@ -184,5 +184,11 @@ cython_debug/
 .zencoder 
 .zenflow
 
-# Local Chroma vector store (generated)
+# Local Chroma vector store (gerado localmente)
 data/chroma_products/
+data/chroma_products/**
+
+# Outros caches/DBs locais
+*.sqlite3
+*.bin
+*.pickle
