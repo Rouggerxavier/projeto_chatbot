@@ -48,6 +48,11 @@ DEFAULT_STATE: Dict[str, Any] = {
     # prompts pendentes e interrupcoes
     "pending_prompt": None,
     "state_stack": [],
+
+    # Conversational slots (novo engine)
+    "conversation_slots": {},
+    "last_questions": [],
+    "last_intent": None,
 }
 
 

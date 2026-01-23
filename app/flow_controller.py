@@ -43,6 +43,7 @@ from app.llm_service import (
 from app.flows.technical_recommendations import can_generate_technical_answer
 from app.search_utils import extract_catalog_constraints_from_consultive
 from app.rag_knowledge import format_knowledge_answer
+from app import conversation_engine
 from app.session_state import (
     get_pending_prompt,
     push_pending_prompt,
@@ -537,6 +538,9 @@ def _extract_consultive_value(field: Optional[str], message: str) -> Optional[st
         return None
 
     if field == "application":
+        # Evita capturar numeros soltos (ex.: "100" de diametro) como aplicacao
+        if t.isdigit():
+            return None
         return t.strip() or None
 
     if field == "environment":
@@ -619,6 +623,90 @@ def _capture_consultive_answer(session_id: str, message: str) -> None:
             "last_consultive_question_key": None,
         },
     )
+
+
+def _reset_consultive_if_new_product(session_id: str, message: str) -> None:
+    """
+    Se o usuario trouxe um novo produto (hint diferente), limpa contexto consultivo antigo
+    para evitar mistura de assuntos (ex.: perguntar sobre cimento quando falou de cano).
+    """
+    hint = extract_product_hint(message)
+    if not hint:
+        return
+
+    st = get_state(session_id)
+    current_hint = st.get("consultive_product_hint") or st.get("last_hint")
+
+    if norm(hint) and norm(hint) != norm(current_hint or ""):
+        reset_consultive_context(session_id)
+
+
+def _reset_conversation_slots_if_new_product(session_id: str, message: str) -> None:
+    hint = extract_product_hint(message)
+    if not hint:
+        return
+    st = get_state(session_id)
+    slots = st.get("conversation_slots") or {}
+    current_item = slots.get("item") or st.get("last_hint")
+    if norm(hint) and norm(hint) != norm(current_item or ""):
+        patch_state(session_id, {"conversation_slots": {}, "last_questions": []})
+
+
+def _is_pipe_category(hint: Optional[str]) -> bool:
+    if not hint:
+        return False
+    t = norm(hint)
+    pipe_keywords = ["tubo", "cano", "joelho", "luva", "te", "tee", "reducao", "pvc", "cpvc", "ppr"]
+    for k in pipe_keywords:
+        # Usa fronteiras de palavra para evitar falsos positivos (ex.: "esmalte")
+        if re.search(rf"\b{re.escape(k)}s?\b", t):
+            return True
+    return False
+
+
+def _handle_pipe_conversation(session_id: str, message: str) -> Optional[Tuple[str, bool]]:
+    """
+    Conversation engine para tubos/conexoes: coleta slots, decide proxima pergunta/acao.
+    """
+    st = get_state(session_id)
+    slots_before = st.get("conversation_slots") or {}
+    last_questions = st.get("last_questions") or []
+
+    # Extrai slots da mensagem
+    slots = conversation_engine.extract_slots(message, slots_before)
+
+    hint = extract_product_hint(message) or slots.get("item")
+    if not _is_pipe_category(hint) and not slots.get("item"):
+        return None
+
+    # Atualiza historico de perguntas (para anti-loop)
+    action = conversation_engine.next_step("buy", slots, last_questions)
+
+    # Persistencia de estado
+    new_last_questions = list(last_questions)
+    if action.get("slot"):
+        new_last_questions.append(action["slot"])
+        new_last_questions = new_last_questions[-5:]
+
+    patch_state(
+        session_id,
+        {
+            "conversation_slots": slots,
+            "last_questions": new_last_questions,
+            "last_intent": "buy",
+            "last_hint": slots.get("item") or hint,
+        },
+    )
+
+    # Respostas
+    if action["action"] == "ask":
+        return sanitize_reply(action["question"]), False
+    if action["action"] == "ask_qty":
+        return sanitize_reply(action["question"]), False
+    if action["action"] == "confirm":
+        return sanitize_reply(action["question"]), False
+
+    return None
 
 
 def _search_consultive_catalog(
@@ -827,6 +915,10 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
         # Se havia pergunta consultiva em aberto, captura a resposta no estado
         _capture_consultive_answer(session_id, message)
 
+        # Se o usuario mudou de produto, limpa contexto consultivo anterior
+        _reset_consultive_if_new_product(session_id, message)
+        _reset_conversation_slots_if_new_product(session_id, message)
+
         if is_greeting(message):
             reply = "Bom dia! Como posso ajudar? (ex.: cimento, areia, trena, etc.)"
             reply = sanitize_reply(reply)
@@ -898,6 +990,13 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                 checkout_reply = sanitize_reply(checkout_reply)
                 save_chat_db(session_id, message, checkout_reply, needs_human)
                 return checkout_reply, needs_human
+
+        # Conversation engine para tubos/conexoes
+        pipe_reply = _handle_pipe_conversation(session_id, message)
+        if pipe_reply:
+            reply, needs_human = pipe_reply
+            save_chat_db(session_id, message, reply, needs_human)
+            return reply, needs_human
 
         # GATE: produtos genericos sempre passam por contexto de uso antes de quantidades
         if has_product_intent(message):
