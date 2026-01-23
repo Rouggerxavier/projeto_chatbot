@@ -43,7 +43,10 @@ from app.llm_service import (
 from app.flows.technical_recommendations import can_generate_technical_answer
 from app.search_utils import extract_catalog_constraints_from_consultive
 from app.rag_knowledge import format_knowledge_answer
-from app import conversation_engine
+from app import catalog_schema
+from app.nlu import extractor
+from app.conversation import policy as conversation_policy
+from app.nlu.expected_parser import parse_expected_field
 from app.session_state import (
     get_pending_prompt,
     push_pending_prompt,
@@ -641,72 +644,102 @@ def _reset_consultive_if_new_product(session_id: str, message: str) -> None:
         reset_consultive_context(session_id)
 
 
-def _reset_conversation_slots_if_new_product(session_id: str, message: str) -> None:
+def _reset_conversation_context(session_id: str, message: str) -> None:
     hint = extract_product_hint(message)
     if not hint:
         return
     st = get_state(session_id)
-    slots = st.get("conversation_slots") or {}
-    current_item = slots.get("item") or st.get("last_hint")
-    if norm(hint) and norm(hint) != norm(current_item or ""):
-        patch_state(session_id, {"conversation_slots": {}, "last_questions": []})
+    current_category = st.get("conversation_category")
+    new_category = catalog_schema.find_category(hint)
+    if new_category and new_category != current_category:
+        patch_state(
+            session_id,
+            {
+                "conversation_category": new_category,
+                "conversation_attributes": {},
+                "asked_attributes": {},
+                "conversation_constraints": {},
+                "last_candidates": [],
+                "last_action": None,
+            },
+        )
 
 
-def _is_pipe_category(hint: Optional[str]) -> bool:
-    if not hint:
-        return False
-    t = norm(hint)
-    pipe_keywords = ["tubo", "cano", "joelho", "luva", "te", "tee", "reducao", "pvc", "cpvc", "ppr"]
-    for k in pipe_keywords:
-        # Usa fronteiras de palavra para evitar falsos positivos (ex.: "esmalte")
-        if re.search(rf"\b{re.escape(k)}s?\b", t):
-            return True
-    return False
-
-
-def _handle_pipe_conversation(session_id: str, message: str) -> Optional[Tuple[str, bool]]:
+def _retrieve_candidates(category: str, attributes: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], int]:
     """
-    Conversation engine para tubos/conexoes: coleta slots, decide proxima pergunta/acao.
+    Placeholder de retrieval hibrido: hoje retorna vazio; plugue RAG/DB aqui.
     """
+    return [], 0
+
+
+def _related_items(category: Optional[str]) -> List[str]:
+    if not category:
+        return []
+    cfg = catalog_schema.get_category_schema(category)
+    return cfg.get("related_items", []) or []
+
+
+def _handle_conversation_engine(session_id: str, message: str) -> Optional[Tuple[str, bool]]:
     st = get_state(session_id)
-    slots_before = st.get("conversation_slots") or {}
-    last_questions = st.get("last_questions") or []
+    conv_ctx = {
+        "category_id": st.get("conversation_category"),
+        "attributes": st.get("conversation_attributes") or {},
+        "constraints": st.get("conversation_constraints") or {},
+        "asked_attributes": st.get("asked_attributes") or {},
+    }
 
-    # Extrai slots da mensagem
-    slots = conversation_engine.extract_slots(message, slots_before)
+    extraction = extractor.extract(message, conv_ctx, catalog_schema.CATEGORY_SCHEMA)
+    category = extraction.get("category_guess") or conv_ctx.get("category_id")
 
-    hint = extract_product_hint(message) or slots.get("item")
-    if not _is_pipe_category(hint) and not slots.get("item"):
+    if not category or category not in catalog_schema.CATEGORY_SCHEMA:
         return None
 
-    # Atualiza historico de perguntas (para anti-loop)
-    action = conversation_engine.next_step("buy", slots, last_questions)
+    attributes = dict(conv_ctx.get("attributes") or {})
+    attributes.update(extraction.get("attributes") or {})
+    constraints = dict(conv_ctx.get("constraints") or {})
+    constraints.update(extraction.get("constraints") or {})
 
-    # Persistencia de estado
-    new_last_questions = list(last_questions)
+    # retrieval
+    candidates, total = _retrieve_candidates(category, attributes)
+
+    action = conversation_policy.next_action(
+        category_id=category,
+        attributes=attributes,
+        asked_attributes=conv_ctx.get("asked_attributes") or {},
+        candidates=candidates,
+        candidate_count_total=total,
+        not_found_signal=extraction.get("not_found_signal"),
+        related_items=_related_items(category),
+    )
+
+    asked = dict(conv_ctx.get("asked_attributes") or {})
     if action.get("slot"):
-        new_last_questions.append(action["slot"])
-        new_last_questions = new_last_questions[-5:]
+        asked[action["slot"]] = asked.get(action["slot"], 0) + 1
 
     patch_state(
         session_id,
         {
-            "conversation_slots": slots,
-            "last_questions": new_last_questions,
-            "last_intent": "buy",
-            "last_hint": slots.get("item") or hint,
+            "conversation_category": category,
+            "conversation_attributes": attributes,
+            "conversation_constraints": constraints,
+            "asked_attributes": asked,
+            "last_candidates": candidates,
+            "last_action": action.get("action"),
+            "last_intent": extraction.get("intent") or st.get("last_intent"),
+            "expected_field": action.get("slot"),
+            "expected_field_type": "qty" if action.get("action") == "ask_qty" else "attribute",
         },
     )
 
-    # Respostas
-    if action["action"] == "ask":
-        return sanitize_reply(action["question"]), False
-    if action["action"] == "ask_qty":
-        return sanitize_reply(action["question"]), False
-    if action["action"] == "confirm":
-        return sanitize_reply(action["question"]), False
+    # Compose response
+    if action["action"] == "not_found":
+        rel = action.get("related_items") or []
+        extra = ""
+        if rel:
+            extra = "\nSugestões relacionadas: " + ", ".join(rel[:3])
+        return sanitize_reply(action["question"] + extra), False
 
-    return None
+    return sanitize_reply(action["question"]), False
 
 
 def _search_consultive_catalog(
@@ -917,7 +950,47 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
 
         # Se o usuario mudou de produto, limpa contexto consultivo anterior
         _reset_consultive_if_new_product(session_id, message)
-        _reset_conversation_slots_if_new_product(session_id, message)
+        _reset_conversation_context(session_id, message)
+
+        # Consumo prioritario de campo esperado (atributo/qty)
+        st_expected = get_state(session_id)
+        expected_field = st_expected.get("expected_field")
+        expected_type = st_expected.get("expected_field_type")
+        if expected_field:
+            parsed = parse_expected_field(expected_field, message)
+            if parsed:
+                # Salva no lugar correto
+                if expected_type == "qty":
+                    # qty vai direto para atributos de conversa (para a policy seguir)
+                    attrs = dict(st_expected.get("conversation_attributes") or {})
+                    attrs["quantidade"] = parsed
+                    patch_state(
+                        session_id,
+                        {
+                            "conversation_attributes": attrs,
+                            "expected_field": None,
+                            "expected_field_type": None,
+                        },
+                    )
+                    # Depois de consumir, deixe seguir o fluxo normal (policy verá qty preenchida)
+                else:
+                    attrs = dict(st_expected.get("conversation_attributes") or {})
+                    # normaliza alias diametro/bitola
+                    key = expected_field
+                    if expected_field == "bitola":
+                        key = "diametro"
+                    attrs[key] = parsed
+                    patch_state(
+                        session_id,
+                        {
+                            "conversation_attributes": attrs,
+                            "expected_field": None,
+                            "expected_field_type": None,
+                        },
+                    )
+            else:
+                # Não conseguiu consumir; mantém expected_field para re-perguntar mais adiante
+                pass
 
         if is_greeting(message):
             reply = "Bom dia! Como posso ajudar? (ex.: cimento, areia, trena, etc.)"
@@ -991,10 +1064,10 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                 save_chat_db(session_id, message, checkout_reply, needs_human)
                 return checkout_reply, needs_human
 
-        # Conversation engine para tubos/conexoes
-        pipe_reply = _handle_pipe_conversation(session_id, message)
-        if pipe_reply:
-            reply, needs_human = pipe_reply
+        # Conversation engine generico (catalogo + policy)
+        ce_reply = _handle_conversation_engine(session_id, message)
+        if ce_reply:
+            reply, needs_human = ce_reply
             save_chat_db(session_id, message, reply, needs_human)
             return reply, needs_human
 

@@ -49,10 +49,20 @@ DEFAULT_STATE: Dict[str, Any] = {
     "pending_prompt": None,
     "state_stack": [],
 
-    # Conversational slots (novo engine)
-    "conversation_slots": {},
-    "last_questions": [],
+    # Conversational slots (novo engine genérico)
+    "conversation_attributes": {},
+    "conversation_category": None,
+    "asked_attributes": {},
+    "conversation_constraints": {},
+    "last_candidates": [],
     "last_intent": None,
+    "last_action": None,
+    "last_user_goal": None,
+    "short_memory": [],
+    "cart_intent": [],
+    # Campo esperado para consumo deterministico
+    "expected_field": None,
+    "expected_field_type": None,  # "attribute" | "qty"
 }
 
 
