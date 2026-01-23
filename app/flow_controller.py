@@ -525,6 +525,102 @@ def _apply_asked_context_fields(session_id: str, st: Dict[str, Any], field: Opti
     patch_state(session_id, {"asked_context_fields": asked, "last_consultive_question_key": field})
 
 
+def _extract_consultive_value(field: Optional[str], message: str) -> Optional[str]:
+    """
+    Extrai respostas simples para perguntas consultivas, evitando ficar em loop.
+    """
+    if not field or not message:
+        return None
+
+    t = norm(message)
+    if t in {"sim", "ok", "okay", "nao", "não", "tanto faz", "bom dia", "boa tarde", "boa noite", "obrigado"}:
+        return None
+
+    if field == "application":
+        return t.strip() or None
+
+    if field == "environment":
+        if "intern" in t:
+            return "interna"
+        if "extern" in t:
+            return "externa"
+        return None
+
+    if field == "exposure":
+        if "cobert" in t:
+            return "coberto"
+        if "expost" in t or "tempo aberto" in t:
+            return "exposto"
+        return None
+
+    if field == "load_type":
+        if "resid" in t:
+            return "residencial"
+        if "pesad" in t or "carga" in t or "garagem" in t or "comercial" in t:
+            return "carga pesada"
+        return None
+
+    if field == "surface":
+        for opt in ["parede", "piso", "teto", "laje", "madeira", "metal", "ferro", "ceramica", "porcelanato"]:
+            if opt in t:
+                return opt
+        if "lisa" in t:
+            return "lisa"
+        return None
+
+    if field == "grain":
+        if "fino" in t or "fina" in t:
+            return "fino"
+        if "medio" in t or "médio" in t:
+            return "medio"
+        if "gross" in t:
+            return "grosso"
+        return None
+
+    if field == "size":
+        import re
+
+        m = re.search(r"\b(\d+[,.]?\d*)\b", message)
+        if m:
+            return m.group(1)
+        return t.strip() or None
+
+    if field == "argamassa_type":
+        for opt in ["assentamento", "reboco", "cola", "colante"]:
+            if opt in t:
+                return opt
+        return None
+
+    return None
+
+
+def _capture_consultive_answer(session_id: str, message: str) -> None:
+    """
+    Se havia uma pergunta consultiva aberta, captura a resposta no estado.
+    """
+    st = get_state(session_id)
+    field = st.get("last_consultive_question_key")
+    if not field:
+        return
+
+    state_key = f"consultive_{field}"
+    if st.get(state_key):
+        patch_state(session_id, {"last_consultive_question_key": None})
+        return
+
+    value = _extract_consultive_value(field, message)
+    if not value:
+        return
+
+    patch_state(
+        session_id,
+        {
+            state_key: value,
+            "last_consultive_question_key": None,
+        },
+    )
+
+
 def _search_consultive_catalog(
     product_hint: str,
     summary_text: str,
@@ -727,6 +823,9 @@ def handle_message(message: str, session_id: str) -> Tuple[str, bool]:
                     reply = sanitize_reply(reply)
                     save_chat_db(session_id, message, reply, needs_human)
                     return reply, needs_human
+
+        # Se havia pergunta consultiva em aberto, captura a resposta no estado
+        _capture_consultive_answer(session_id, message)
 
         if is_greeting(message):
             reply = "Bom dia! Como posso ajudar? (ex.: cimento, areia, trena, etc.)"
